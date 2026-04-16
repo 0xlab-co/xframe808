@@ -40,12 +40,26 @@
 
 ### macOS 首次開啟
 
-下載後解壓縮，**右鍵點擊 `xFRAME808.app` → 開啟**（第一次），之後就能正常雙擊。
-若出現「無法驗證開發者」警告，在終端機執行：
+app 未經 Apple 簽章，macOS Gatekeeper 會阻擋。任選一種方式解除：
+
+**方法 A — 終端機解除隔離（推薦，最快）**
+
+下載並解壓縮後，在終端機執行：
 
 ```bash
-xattr -cr /path/to/xFRAME808.app
+xattr -cr ~/Downloads/xFRAME808.app
 ```
+
+之後就能正常雙擊開啟。（若 .app 不在 Downloads，把路徑改成實際位置）
+
+**方法 B — 系統設定手動允許**
+
+1. 雙擊 `xFRAME808.app`，出現 *"Apple could not verify..."* 警告時按 **Done**
+2. 開啟「系統設定」→「隱私權與安全性」
+3. 捲到底部「安全性」區塊，點 **仍要打開 (Open Anyway)**
+4. 輸入密碼確認
+
+> macOS 13 及更早版本也可用「右鍵 → 開啟」繞過，但 macOS 15 Sequoia 起此方式失效。
 
 ### Windows 首次開啟
 
