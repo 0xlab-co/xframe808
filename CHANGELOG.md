@@ -2,6 +2,23 @@
 
 本檔記錄 xFRAME808 的版本改動。格式參照 [Keep a Changelog](https://keepachangelog.com/zh-TW/1.1.0/)。
 
+## [3.1.0] - 2026-04-22
+
+### Added
+
+- Windows 版新增 `xFRAME808-Windows-Setup.exe` 安裝檔（由 [Inno Setup 6](https://jrsoftware.org/isinfo.php) 打包）：雙擊安裝、自動建立開始選單 / 選擇性桌面捷徑、可從「新增移除程式」乾淨解除。
+- 新增 `scripts/installer.iss` Inno Setup 腳本，版本號由 CI 從 git tag 自動注入（`/DAppVersion=x.y.z`）。
+
+### Changed
+
+- GitHub Actions `build.yml` Windows job 在既有 zip 之外，加一步 Inno Setup 編譯，Release 同時上架 `.exe` installer 與 `.zip` 綠色版。
+- README 首次開啟 / 下載段落改為先推 installer，再說明綠色版注意事項（資料夾不可拆、需用捷徑）。
+- `scripts/build_win.bat` 加上本機 Inno Setup 指令提示。
+
+### Notes
+
+- Installer 本身未簽章，首次執行仍會觸發 Windows SmartScreen 警告（同綠色版）；徹底解除需購買 Authenticode 憑證，屬於後續決策，不在本版範圍。
+
 ## [3.0.0] - 2026-04-22
 
 本版為 UI 全面重構：從原本的單欄表單升級為 sidebar + 預覽雙欄佈局，並加入任意尺寸圖層裁切流程。同時切換至 warm cream light 主題。

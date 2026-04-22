@@ -28,8 +28,8 @@
 - 圖層裁切目前以「目前輸出比例」為基準，切換到其他 preset 時需依需要重新裁切
 - 前景白底處理僅針對外圍連通的近白背景，不是完整智慧去背
 - 文字建議 / 系統字型功能尚未實作，先列入 roadmap
-- macOS .app 使用 ad-hoc 簽名，首次開啟需右鍵 → 開啟
-- Windows .exe 未經過 Microsoft 簽名，首次執行可能觸發 SmartScreen 警告
+- macOS .app 使用 ad-hoc 簽名，首次開啟需解除 Gatekeeper 隔離
+- Windows installer / .exe 未經過 Microsoft 簽名，首次執行仍會觸發 SmartScreen（需按「仍要執行」）
 - 目前僅提供 Apple Silicon Mac，未支援 Intel Mac
 
 ## 平台支援
@@ -46,7 +46,8 @@
 前往 [Releases](../../releases/latest) 下載最新版：
 
 - **macOS（Apple Silicon）**：`xFRAME808-macOS.zip`
-- **Windows**：`xFRAME808-Windows.zip`
+- **Windows（推薦）**：`xFRAME808-Windows-Setup.exe` — 安裝檔，自動建立捷徑、可從「新增移除程式」乾淨解除
+- **Windows（免安裝版）**：`xFRAME808-Windows.zip` — 進階使用者用的綠色版，整個資料夾不能拆
 
 ### macOS 首次開啟
 
@@ -73,7 +74,18 @@ xattr -cr ~/Downloads/xFRAME808.app
 
 ### Windows 首次開啟
 
-下載後解壓縮，雙擊 `xFRAME808.exe`。若 Windows Defender SmartScreen 攔截，點選「其他資訊」→「仍要執行」。
+**方法 A — 使用安裝檔（推薦）**
+
+1. 下載 `xFRAME808-Windows-Setup.exe`
+2. 雙擊，若 SmartScreen 攔截 → 點「其他資訊」→「仍要執行」
+3. 依精靈步驟完成安裝（可選擇是否建立桌面捷徑）
+4. 從開始選單 / 桌面啟動；日後要移除從「新增移除程式」即可乾淨解除
+
+**方法 B — 綠色版 zip**
+
+下載 `xFRAME808-Windows.zip`，解壓縮後**整個 `xFRAME808\` 資料夾**要保留，雙擊裡面的 `xFRAME808.exe`。若 SmartScreen 攔截 → 點「其他資訊」→「仍要執行」。
+
+> ⚠️ 綠色版不能把 `xFRAME808.exe` 搬出資料夾單獨使用，因為它需要同層 `_internal\` 裡的 Python / Qt DLL。想在桌面有圖示，對 .exe 右鍵 → 建立捷徑。
 
 ## 使用方式
 
@@ -162,6 +174,13 @@ REM 產出 dist\xFRAME808\xFRAME808.exe
 
 或使用內建的 [scripts/build_win.bat](scripts/build_win.bat)。
 
+要額外產出 `Setup.exe` 安裝檔，請先安裝 [Inno Setup 6](https://jrsoftware.org/isinfo.php)（免費），再執行：
+
+```cmd
+"C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DAppVersion=3.1.0 scripts\installer.iss
+REM 產出 dist\installer\xFRAME808-Windows-Setup.exe
+```
+
 ## 專案結構
 
 ```
@@ -180,7 +199,8 @@ REM 產出 dist\xFRAME808\xFRAME808.exe
 │   └── worker.py           # 背景批次執行緒
 ├── scripts/
 │   ├── build_mac.sh        # macOS 打包腳本
-│   └── build_win.bat       # Windows 打包腳本
+│   ├── build_win.bat       # Windows 打包腳本
+│   └── installer.iss       # Inno Setup installer 腳本
 ├── .github/workflows/
 │   └── build.yml           # GitHub Actions 自動打包
 └── requirements.txt

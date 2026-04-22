@@ -77,14 +77,39 @@ jobs:
         run: |
           Compress-Archive -Path "dist/xFRAME808/*" -DestinationPath "dist/xFRAME808-Windows.zip"
 
-      - name: Upload artifact
+      - name: Compute installer version
+        id: version
+        shell: pwsh
+        run: |
+          if ($env:GITHUB_REF -like "refs/tags/v*") {
+            $v = $env:GITHUB_REF -replace "refs/tags/v", ""
+          } else {
+            $v = "0.0.0-dev"
+          }
+          "version=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Build installer (Inno Setup)
+        shell: pwsh
+        run: |
+          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          & $iscc "/DAppVersion=${{ steps.version.outputs.version }}" scripts\installer.iss
+
+      - name: Upload ZIP artifact
         uses: actions/upload-artifact@v4
         with:
           name: xFRAME808-Windows
           path: dist/xFRAME808-Windows.zip
 
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: xFRAME808-Windows-Setup
+          path: dist/installer/xFRAME808-Windows-Setup.exe
+
       - name: Upload to release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/xFRAME808-Windows.zip
+          files: |
+            dist/xFRAME808-Windows.zip
+            dist/installer/xFRAME808-Windows-Setup.exe
