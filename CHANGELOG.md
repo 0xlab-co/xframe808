@@ -2,6 +2,49 @@
 
 本檔記錄 xFRAME808 的版本改動。格式參照 [Keep a Changelog](https://keepachangelog.com/zh-TW/1.1.0/)。
 
+## [3.0.0] - 2026-04-22
+
+本版為 UI 全面重構：從原本的單欄表單升級為 sidebar + 預覽雙欄佈局，並加入任意尺寸圖層裁切流程。同時切換至 warm cream light 主題。
+
+### Added
+
+#### 介面重構
+- 新主視窗採「左側 sidebar（圖層 / 資料夾 / 位置微調）+ 右側即時預覽」雙欄佈局。
+- sidebar 寬度固定 408 px，可捲動，底部固定 sticky action 區（狀態膠囊 + 進度條 + 主要動作按鈕）。
+- 預覽區採淺米色底 + 格紋 matte，隨輸出比例自動鎖定 aspect ratio。
+- 全新 warm cream light 主題：奶米底、暖棕字、赤褐 terracotta accent，取代原本深色主題。
+- 導入 inline SVG icon 系統（feather-style），走 `QSvgRenderer.paintEvent` 直接繪製，DPR-safe 且依 widget 實際大小自適應。
+- 新增 `ui/theme.py`、`ui/icons.py`、`ui/widgets.py`、`ui/preview.py` 四個模組。
+
+#### 圖層裁切
+- 新增 `CropDialog`：可視化裁切對話框，以目前輸出比例鎖定裁切框比例，支援拖曳移動與四角縮放。
+- 匯入前景 / 後景時若比例不符目前 preset，自動跳出裁切視窗，不再直接拒絕。
+- 每個圖層獨立保留裁切設定；`PathRow` 上新增「裁切」與「移除」按鈕，可隨時重新調整或清掉單一圖層。
+- 切換 preset 時保留原始檔案選取，提示使用者重新裁切。
+- 新增 core 層 `apply_crop_box()` 與 `CropBox` 型別，`load_layer` / `load_layers` / `batch_composite` / `CompositeWorker` 串接 crop box 參數。
+
+#### 圖層預覽
+- 新增 `build_layer_preview()`：未選商品資料夾時，可先預覽前 / 後景圖層合成結果，方便確認素材是否正確。
+- `MainWindow` 在尚未選擇商品資料夾但已選到圖層時，改顯示圖層預覽而非錯誤訊息。
+
+#### 測試
+- 新增 `test_load_layer_accepts_crop_box_from_wrong_ratio_image`、`test_build_layer_preview_flattens_layers_without_product`、`test_batch_composite_accepts_crop_box_for_wrong_ratio_background` 三個案例，覆蓋裁切 + 圖層預覽路徑。
+
+### Changed
+
+- `load_layer` / `load_layers` 新增 `crop_box` / `background_crop_box` / `foreground_crop_box` 參數。
+- `batch_composite` 與 `CompositeWorker` 同步擴充 crop box 欄位。
+- `MainWindow` 大幅改寫：狀態邏輯改以 `_layer_crops` dict 管理每層各 preset 的裁切框；預覽 pipeline 拆出 `_update_preview` 與 `build_layer_preview` 兩路。
+- 行為按鈕文案與 icon 改為雙語（中文 + 英文小字），sticky action 以 terracotta 實色強調。
+- README 更新：新增「圖層裁切與移除」段、調整「使用方式」步驟與已知限制。
+
+### Not in Scope
+
+- 商品安全區編輯器（持續延後）
+- 自由輸出比例 / 自訂畫布尺寸
+- 跨 preset 自動重映射裁切框（目前切 preset 需使用者重新裁切）
+- 文字建議 / 字型 / 樣式控制（Roadmap 項目）
+
 ## [2.0.0] - 2026-04-22
 
 本版整併了 v2.0「多景套框與比例 Preset」與 v2.1「自動去白底與白底輸出」兩階段升級。

@@ -13,6 +13,7 @@ OUTPUT_SUFFIX = "_套框"
 SUPPORTED_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp")
 ASPECT_RATIO_TOLERANCE = 0.005
 NEAR_WHITE_THRESHOLD = 245
+CropBox = tuple[int, int, int, int]
 
 
 @dataclass(frozen=True)
@@ -111,6 +112,18 @@ def crop_visible_area(image: Image.Image) -> Image.Image:
     return image.crop(bbox)
 
 
+def apply_crop_box(image: Image.Image, crop_box: CropBox) -> Image.Image:
+    width, height = image.size
+    left, top, right, bottom = crop_box
+    left = max(0, min(width - 1, int(round(left))))
+    top = max(0, min(height - 1, int(round(top))))
+    right = max(left + 1, min(width, int(round(right))))
+    bottom = max(top + 1, min(height, int(round(bottom))))
+    if right <= left or bottom <= top:
+        raise ValueError("裁切範圍無效。")
+    return image.crop((left, top, right, bottom))
+
+
 def aspect_ratio_matches(
     size: tuple[int, int],
     preset: LayoutPreset,
@@ -194,11 +207,18 @@ def flatten_on_white(image: Image.Image) -> Image.Image:
     return Image.alpha_composite(white_background, rgba)
 
 
-def load_layer(path: Path | None, preset_id: str, layer_name: str) -> Image.Image | None:
+def load_layer(
+    path: Path | None,
+    preset_id: str,
+    layer_name: str,
+    crop_box: CropBox | None = None,
+) -> Image.Image | None:
     if path is None:
         return None
     preset = get_layout_preset(preset_id)
     with Image.open(path) as image:
+        if crop_box is not None:
+            image = apply_crop_box(image, crop_box)
         validate_layer_image(image, preset, layer_name)
         if layer_name == "前景套框":
             image = remove_edge_connected_near_white(image)
@@ -209,12 +229,14 @@ def load_layers(
     preset_id: str,
     background_path: Path | None = None,
     foreground_path: Path | None = None,
+    background_crop_box: CropBox | None = None,
+    foreground_crop_box: CropBox | None = None,
 ) -> tuple[Image.Image | None, Image.Image | None]:
     if background_path is None and foreground_path is None:
         raise ValueError("請至少選擇前景套框或後景底圖。")
 
-    background = load_layer(background_path, preset_id, "後景底圖")
-    foreground = load_layer(foreground_path, preset_id, "前景套框")
+    background = load_layer(background_path, preset_id, "後景底圖", crop_box=background_crop_box)
+    foreground = load_layer(foreground_path, preset_id, "前景套框", crop_box=foreground_crop_box)
     return background, foreground
 
 
@@ -278,6 +300,21 @@ def build_composite(
     return flatten_on_white(result)
 
 
+def build_layer_preview(
+    preset_id: str,
+    background: Image.Image | None = None,
+    foreground: Image.Image | None = None,
+) -> Image.Image:
+    preset = get_layout_preset(preset_id)
+    if background is None and foreground is None:
+        raise ValueError("請至少選擇前景套框或後景底圖。")
+
+    canvas = background.copy() if background is not None else Image.new("RGBA", preset.canvas_size, (0, 0, 0, 0))
+    if foreground is not None:
+        canvas = Image.alpha_composite(canvas, foreground)
+    return flatten_on_white(canvas)
+
+
 def list_products(input_dir: Path) -> list[Path]:
     return sorted(
         {
@@ -294,12 +331,20 @@ def batch_composite(
     output_dir: Path,
     background_path: Path | None = None,
     foreground_path: Path | None = None,
+    background_crop_box: CropBox | None = None,
+    foreground_crop_box: CropBox | None = None,
     offset_x: int = 0,
     offset_y: int = 0,
     scale: float = 1.0,
 ):
     """Generator that yields (current, total, output_path) after each image."""
-    background, foreground = load_layers(preset_id, background_path, foreground_path)
+    background, foreground = load_layers(
+        preset_id,
+        background_path,
+        foreground_path,
+        background_crop_box=background_crop_box,
+        foreground_crop_box=foreground_crop_box,
+    )
     products = list_products(input_dir)
     total = len(products)
     output_dir.mkdir(parents=True, exist_ok=True)

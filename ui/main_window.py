@@ -6,24 +6,44 @@ from PIL import Image
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import (
-    QButtonGroup,
     QFileDialog,
-    QGridLayout,
-    QGroupBox,
+    QFrame,
     QHBoxLayout,
     QLabel,
-    QLineEdit,
     QMainWindow,
     QMessageBox,
-    QProgressBar,
     QPushButton,
-    QSlider,
+    QScrollArea,
     QVBoxLayout,
     QWidget,
 )
 
-from core.compositor import PRESET_ORDER, build_composite, get_layout_preset, list_products, load_layers
+from core.compositor import (
+    CropBox,
+    PRESET_ORDER,
+    aspect_ratio_matches,
+    build_composite,
+    build_layer_preview,
+    get_layout_preset,
+    list_products,
+    load_layers,
+)
+from ui import theme
+from ui.crop_dialog import CropDialog
+from ui.preview import PreviewPane
+from ui.widgets import (
+    ActionButton,
+    IconLabel,
+    PathRow,
+    PresetButton,
+    SectionHeader,
+    SliderRow,
+)
 from ui.worker import CompositeWorker
+
+
+SIDEBAR_WIDTH = 408  # +20% from 340
+WINDOW_MIN_SIZE = (1108, 680)
 
 
 def pil_to_qpixmap(pil_image: Image.Image) -> QPixmap:
@@ -33,196 +53,434 @@ def pil_to_qpixmap(pil_image: Image.Image) -> QPixmap:
     return QPixmap.fromImage(qimage)
 
 
-class PathRow(QWidget):
-    def __init__(self, label: str, button_text: str, parent=None):
-        super().__init__(parent)
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-
-        lbl = QLabel(label)
-        lbl.setFixedWidth(100)
-        self.line_edit = QLineEdit()
-        self.line_edit.setReadOnly(True)
-        self.button = QPushButton(button_text)
-        self.button.setFixedWidth(110)
-
-        layout.addWidget(lbl)
-        layout.addWidget(self.line_edit, 1)
-        layout.addWidget(self.button)
-
-    def text(self) -> str:
-        return self.line_edit.text()
-
-    def set_text(self, text: str) -> None:
-        self.line_edit.setText(text)
+PRESET_SUBLABEL = {
+    "1:1": "1080×1080",
+    "9:16": "1080×1920",
+    "16:9": "1920×1080",
+    "3:4": "1080×1440",
+}
 
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("xFRAME808")
-        self.setMinimumSize(780, 640)
+        self.setMinimumSize(*WINDOW_MIN_SIZE)
 
         self._worker: CompositeWorker | None = None
         self._current_preset_id = PRESET_ORDER[0]
-        self._layer_cache_key: tuple[str, str, str] | None = None
+        self._layer_cache_key: tuple[str, str, str, str, str] | None = None
         self._layer_cache: tuple[Image.Image | None, Image.Image | None] | None = None
+        self._layer_crops: dict[str, dict[str, CropBox]] = {
+            "background": {},
+            "foreground": {},
+        }
 
         central = QWidget()
+        central.setStyleSheet(f"background: {theme.BG_BASE};")
         self.setCentralWidget(central)
-        layout = QVBoxLayout(central)
-        layout.setSpacing(12)
-        layout.setContentsMargins(16, 16, 16, 16)
 
-        self.preset_group = self._build_preset_panel()
-        layout.addWidget(self.preset_group)
+        root = QHBoxLayout(central)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
 
-        self.background_row = PathRow("後景底圖：", "選擇檔案...")
-        self.foreground_row = PathRow("前景套框：", "選擇檔案...")
-        self.input_row = PathRow("商品資料夾：", "選擇資料夾...")
-        self.output_row = PathRow("輸出資料夾：", "選擇資料夾...")
-
-        layout.addWidget(self.background_row)
-        layout.addWidget(self.foreground_row)
-        layout.addWidget(self.input_row)
-        layout.addWidget(self.output_row)
-
-        self.adjust_group = self._build_adjust_panel()
-        layout.addWidget(self.adjust_group)
-
-        self.preview_label = QLabel("選擇輸出比例、至少一個景圖與商品資料夾後，將自動預覽白底輸出結果")
-        self.preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.preview_label.setWordWrap(True)
-        self.preview_label.setStyleSheet("background-color: #f0f0f0; border: 1px solid #ccc; border-radius: 4px;")
-        layout.addWidget(self.preview_label, 1)
-
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setVisible(False)
-        self.progress_label = QLabel("")
-        self.progress_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.progress_label.setVisible(False)
-        layout.addWidget(self.progress_bar)
-        layout.addWidget(self.progress_label)
-
-        self.start_button = QPushButton("開始套框")
-        self.start_button.setFixedHeight(40)
-        self.start_button.setEnabled(False)
-        layout.addWidget(self.start_button)
+        root.addWidget(self._build_sidebar(), 0)
+        self._preview = PreviewPane()
+        root.addWidget(self._preview, 1)
 
         self._preview_timer = QTimer(self)
         self._preview_timer.setSingleShot(True)
         self._preview_timer.setInterval(40)
         self._preview_timer.timeout.connect(self._update_preview)
 
-        self.background_row.button.clicked.connect(self._browse_background)
-        self.foreground_row.button.clicked.connect(self._browse_foreground)
-        self.input_row.button.clicked.connect(self._browse_input)
-        self.output_row.button.clicked.connect(self._browse_output)
-        self.start_button.clicked.connect(self._on_start_clicked)
+        # Initial state
+        self._apply_preset_to_preview()
+        self._update_state()
 
-        self._update_preset_hint()
-
-    def _build_preset_panel(self) -> QGroupBox:
-        group = QGroupBox("輸出比例")
-        layout = QVBoxLayout(group)
-        layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(8)
-
-        button_row = QHBoxLayout()
-        button_row.setSpacing(8)
-        self.preset_buttons = QButtonGroup(self)
-        self.preset_buttons.setExclusive(True)
-        self._preset_button_refs: dict[str, QPushButton] = {}
-
-        for preset_id in PRESET_ORDER:
-            button = QPushButton(preset_id)
-            button.setCheckable(True)
-            button.setMinimumHeight(34)
-            button.setStyleSheet(
-                "QPushButton:checked { background-color: #1f6feb; color: white; border-color: #1f6feb; }"
-            )
-            button.clicked.connect(lambda checked, value=preset_id: self._on_preset_selected(value))
-            self.preset_buttons.addButton(button)
-            self._preset_button_refs[preset_id] = button
-            button_row.addWidget(button)
-
-        self._preset_button_refs[self._current_preset_id].setChecked(True)
-        self.preset_hint = QLabel("")
-        self.preset_hint.setStyleSheet("color: #666;")
-
-        layout.addLayout(button_row)
-        layout.addWidget(self.preset_hint)
-        return group
-
-    def _build_adjust_panel(self) -> QGroupBox:
-        group = QGroupBox("位置微調")
-        grid = QGridLayout(group)
-        grid.setHorizontalSpacing(12)
-        grid.setVerticalSpacing(6)
-
-        def make_row(row: int, label_text: str, minimum: int, maximum: int, default: int, suffix: str):
-            lbl = QLabel(label_text)
-            lbl.setFixedWidth(70)
-            slider = QSlider(Qt.Orientation.Horizontal)
-            slider.setMinimum(minimum)
-            slider.setMaximum(maximum)
-            slider.setValue(default)
-            value_lbl = QLabel(f"{default}{suffix}")
-            value_lbl.setFixedWidth(70)
-            value_lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-            grid.addWidget(lbl, row, 0)
-            grid.addWidget(slider, row, 1)
-            grid.addWidget(value_lbl, row, 2)
-            return slider, value_lbl
-
-        self.offset_x_slider, self.offset_x_value = make_row(0, "X 位移：", -300, 300, 0, " px")
-        self.offset_y_slider, self.offset_y_value = make_row(1, "Y 位移：", -300, 300, 0, " px")
-        self.scale_slider, self.scale_value = make_row(2, "縮放：", 50, 150, 100, " %")
-
-        self.reset_button = QPushButton("重置")
-        self.reset_button.setFixedWidth(80)
-        grid.addWidget(self.reset_button, 3, 2)
-
-        self.offset_x_slider.valueChanged.connect(self._on_offset_x_changed)
-        self.offset_y_slider.valueChanged.connect(self._on_offset_y_changed)
-        self.scale_slider.valueChanged.connect(self._on_scale_changed)
-        self.reset_button.clicked.connect(self._on_reset_adjust)
-
-        return group
-
-    def _current_adjust(self) -> tuple[int, int, float]:
-        return (
-            self.offset_x_slider.value(),
-            self.offset_y_slider.value(),
-            self.scale_slider.value() / 100.0,
+    # ── Sidebar construction ────────────────────────────────────────────
+    def _build_sidebar(self) -> QWidget:
+        side = QFrame()
+        side.setObjectName("Sidebar")
+        side.setFixedWidth(SIDEBAR_WIDTH)
+        side.setStyleSheet(
+            f"#Sidebar {{ background: {theme.BG_PANEL}; border-right: 1px solid {theme.BORDER}; }}"
         )
 
-    def _has_selected_layers(self) -> bool:
-        return bool(self.background_row.text() or self.foreground_row.text())
+        layout = QVBoxLayout(side)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
 
-    def _selected_layer_paths(self) -> tuple[Path | None, Path | None]:
-        background_path = Path(self.background_row.text()) if self.background_row.text() else None
-        foreground_path = Path(self.foreground_row.text()) if self.foreground_row.text() else None
-        return background_path, foreground_path
+        # ── Scrollable section area ──
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+
+        content = QWidget()
+        content.setStyleSheet(f"background: {theme.BG_PANEL};")
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(14, 14, 14, 0)
+        content_layout.setSpacing(0)
+
+        content_layout.addWidget(self._build_ratio_section())
+        content_layout.addWidget(self._divider())
+        content_layout.addWidget(self._build_layers_section())
+        content_layout.addWidget(self._divider())
+        content_layout.addWidget(self._build_folders_section())
+        content_layout.addWidget(self._divider())
+        content_layout.addWidget(self._build_adjust_section())
+        content_layout.addStretch(1)
+
+        scroll.setWidget(content)
+        layout.addWidget(scroll, 1)
+
+        # ── Sticky bottom ──
+        layout.addWidget(self._build_bottom())
+
+        return side
+
+    def _divider(self) -> QWidget:
+        line = QFrame()
+        line.setFixedHeight(1)
+        line.setStyleSheet(f"background: {theme.BORDER};")
+        wrap = QWidget()
+        wrap_layout = QVBoxLayout(wrap)
+        wrap_layout.setContentsMargins(0, 0, 0, 18)
+        wrap_layout.addWidget(line)
+        return wrap
+
+    def _build_ratio_section(self) -> QWidget:
+        container = QWidget()
+        v = QVBoxLayout(container)
+        v.setContentsMargins(0, 0, 0, 18)
+        v.setSpacing(0)
+
+        v.addWidget(SectionHeader("zap", "輸出比例", "Ratio"))
+
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(6)
+        btn_row.setContentsMargins(0, 0, 0, 0)
+        self._preset_button_refs: dict[str, PresetButton] = {}
+        for preset_id in PRESET_ORDER:
+            btn = PresetButton(preset_id, PRESET_SUBLABEL[preset_id])
+            btn.clicked.connect(lambda pid=preset_id: self._on_preset_selected(pid))
+            self._preset_button_refs[preset_id] = btn
+            btn_row.addWidget(btn)
+        self._preset_button_refs[self._current_preset_id].setChecked(True)
+
+        btn_wrap = QWidget()
+        btn_wrap.setLayout(btn_row)
+        v.addWidget(btn_wrap)
+
+        # Hint pill
+        mono = theme.mono_family()
+        hint = QWidget()
+        hint_row = QHBoxLayout(hint)
+        hint_row.setContentsMargins(10, 6, 10, 6)
+        hint_row.setSpacing(6)
+        hint.setStyleSheet(
+            f"background: {theme.BG_ELEVATED}; border: 1px solid {theme.BORDER}; border-radius: {theme.RADIUS_SM}px;"
+        )
+        hint_row.addWidget(IconLabel("zap", size=9, color=theme.TEXT_MUTED))
+        self._hint_label = QLabel("")
+        self._hint_label.setStyleSheet(
+            f"color: {theme.TEXT_MUTED}; font-family: '{mono}'; font-size: 10px; background: transparent; border: none;"
+        )
+        hint_row.addWidget(self._hint_label)
+        hint_row.addStretch(1)
+
+        hint_wrap = QWidget()
+        hw = QVBoxLayout(hint_wrap)
+        hw.setContentsMargins(0, 7, 0, 0)
+        hw.addWidget(hint)
+        v.addWidget(hint_wrap)
+
+        self._refresh_hint()
+        return container
+
+    def _build_layers_section(self) -> QWidget:
+        container = QWidget()
+        v = QVBoxLayout(container)
+        v.setContentsMargins(0, 0, 0, 18)
+        v.setSpacing(12)
+
+        v.addWidget(SectionHeader("layers", "圖層", "Layers"))
+
+        self._bg_row = PathRow("image", "後景底圖", "Background", show_crop=True, show_clear=True)
+        self._fg_row = PathRow("image", "前景套框", "Foreground", show_crop=True, show_clear=True)
+        self._bg_row.browse_requested.connect(self._browse_background)
+        self._bg_row.crop_requested.connect(self._crop_background)
+        self._bg_row.clear_requested.connect(self._clear_background)
+        self._fg_row.browse_requested.connect(self._browse_foreground)
+        self._fg_row.crop_requested.connect(self._crop_foreground)
+        self._fg_row.clear_requested.connect(self._clear_foreground)
+        v.addWidget(self._bg_row)
+        v.addWidget(self._fg_row)
+        return container
+
+    def _build_folders_section(self) -> QWidget:
+        container = QWidget()
+        v = QVBoxLayout(container)
+        v.setContentsMargins(0, 0, 0, 18)
+        v.setSpacing(12)
+
+        v.addWidget(SectionHeader("folder", "資料夾", "Folders"))
+
+        self._input_row = PathRow("folder", "商品資料夾", "Products")
+        self._output_row = PathRow("folder", "輸出資料夾", "Output")
+        self._input_row.browse_requested.connect(self._browse_input)
+        self._output_row.browse_requested.connect(self._browse_output)
+        v.addWidget(self._input_row)
+        v.addWidget(self._output_row)
+        return container
+
+    def _build_adjust_section(self) -> QWidget:
+        container = QWidget()
+        v = QVBoxLayout(container)
+        v.setContentsMargins(0, 0, 0, 18)
+        v.setSpacing(14)
+
+        reset_btn = QPushButton("重置  Reset")
+        reset_btn.setFixedHeight(28)
+        reset_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        reset_btn.setStyleSheet(
+            f"""
+            QPushButton {{
+                background: {theme.BG_ELEVATED};
+                border: 1px solid {theme.BORDER};
+                border-radius: {theme.RADIUS_SM}px;
+                color: {theme.TEXT_SECONDARY};
+                font-size: 11px;
+                font-weight: 500;
+                padding: 0 12px;
+            }}
+            QPushButton:hover {{
+                background: {theme.BG_HOVER};
+                border-color: {theme.BORDER_STRONG};
+                color: {theme.TEXT_PRIMARY};
+            }}
+            """
+        )
+        reset_btn.clicked.connect(self._on_reset_adjust)
+        v.addWidget(SectionHeader("sliders", "位置微調", "Adjust", action=reset_btn))
+
+        self._offset_x = SliderRow("X 位移", "Offset X", -300, 300, 0, lambda v: f"{'+' if v > 0 else ''}{v}px")
+        self._offset_y = SliderRow("Y 位移", "Offset Y", -300, 300, 0, lambda v: f"{'+' if v > 0 else ''}{v}px")
+        self._scale = SliderRow("縮放", "Scale", 50, 150, 100, lambda v: f"{v}%")
+
+        self._offset_x.value_changed.connect(lambda _: self._schedule_preview())
+        self._offset_y.value_changed.connect(lambda _: self._schedule_preview())
+        self._scale.value_changed.connect(lambda _: self._schedule_preview())
+
+        v.addWidget(self._offset_x)
+        v.addWidget(self._offset_y)
+        v.addWidget(self._scale)
+        return container
+
+    def _build_bottom(self) -> QWidget:
+        container = QFrame()
+        container.setStyleSheet(
+            f"QFrame {{ background: {theme.BG_PANEL}; border-top: 1px solid {theme.BORDER}; }}"
+        )
+        v = QVBoxLayout(container)
+        v.setContentsMargins(14, 14, 14, 14)
+        v.setSpacing(8)
+
+        # Status pill (success)
+        self._status_pill = QFrame()
+        self._status_pill.setStyleSheet(
+            f"""
+            QFrame {{
+                background: {theme.SUCCESS_GLOW};
+                border: 1px solid {theme.SUCCESS_BORDER};
+                border-radius: {theme.RADIUS_SM}px;
+            }}
+            """
+        )
+        pill_row = QHBoxLayout(self._status_pill)
+        pill_row.setContentsMargins(10, 7, 10, 7)
+        pill_row.setSpacing(8)
+        check_icon = IconLabel("check", size=10, color=theme.SUCCESS)
+        check_icon.setStyleSheet("background: transparent;")
+        pill_row.addWidget(check_icon)
+        self._status_pill_label = QLabel("")
+        self._status_pill_label.setStyleSheet(
+            f"color: {theme.SUCCESS}; font-size: 11px; font-weight: 500; background: transparent; border: none;"
+        )
+        pill_row.addWidget(self._status_pill_label)
+        pill_row.addStretch(1)
+        self._status_pill.setVisible(False)
+        v.addWidget(self._status_pill)
+
+        # Progress block
+        self._progress_box = QWidget()
+        self._progress_box.setStyleSheet("background: transparent;")
+        pbl = QVBoxLayout(self._progress_box)
+        pbl.setContentsMargins(0, 0, 0, 0)
+        pbl.setSpacing(5)
+        prog_row = QHBoxLayout()
+        prog_row.setContentsMargins(0, 0, 0, 0)
+        prog_label_zh = QLabel("處理中…")
+        prog_label_zh.setStyleSheet(f"color: {theme.TEXT_MUTED}; font-size: 11px;")
+        prog_row.addWidget(prog_label_zh)
+        prog_row.addStretch(1)
+        mono = theme.mono_family()
+        self._progress_count = QLabel("0/0")
+        self._progress_count.setStyleSheet(
+            f"color: {theme.TEXT_SECONDARY}; font-family: '{mono}'; font-size: 11px;"
+        )
+        prog_row.addWidget(self._progress_count)
+        pbl.addLayout(prog_row)
+
+        self._progress_track = QFrame()
+        self._progress_track.setFixedHeight(3)
+        self._progress_track.setStyleSheet(
+            f"background: {theme.BG_ACTIVE}; border-radius: 2px;"
+        )
+        self._progress_fill = QFrame(self._progress_track)
+        self._progress_fill.setStyleSheet(f"background: {theme.ACCENT}; border-radius: 2px;")
+        self._progress_fill.setGeometry(0, 0, 0, 3)
+        pbl.addWidget(self._progress_track)
+        self._progress_box.setVisible(False)
+        v.addWidget(self._progress_box)
+
+        # Main action
+        self._action_btn = ActionButton()
+        self._action_btn.clicked.connect(self._on_start_clicked)
+        v.addWidget(self._action_btn)
+
+        return container
+
+    # ── Helpers ─────────────────────────────────────────────────────────
+    def _refresh_hint(self) -> None:
+        preset = get_layout_preset(self._current_preset_id)
+        w, h = preset.canvas_size
+        self._hint_label.setText(f"{w} × {h} px  ·  白底輸出  ·  WHITE FLATTEN")
+
+    def _apply_preset_to_preview(self) -> None:
+        preset = get_layout_preset(self._current_preset_id)
+        self._preview.set_preset(self._current_preset_id, preset.canvas_size)
+
+    def _current_adjust(self) -> tuple[int, int, float]:
+        return (self._offset_x.value(), self._offset_y.value(), self._scale.value() / 100.0)
+
+    def _has_selected_layers(self) -> bool:
+        return bool(self._bg_row.text() or self._fg_row.text())
+
+    def _layer_row(self, layer_key: str) -> PathRow:
+        return self._bg_row if layer_key == "background" else self._fg_row
+
+    def _layer_label(self, layer_key: str) -> str:
+        return "後景底圖" if layer_key == "background" else "前景套框"
+
+    def _current_layer_crop(self, layer_key: str) -> CropBox | None:
+        return self._layer_crops[layer_key].get(self._current_preset_id)
+
+    def _selected_layer_specs(self) -> tuple[Path | None, CropBox | None, Path | None, CropBox | None]:
+        bg = Path(self._bg_row.text()) if self._bg_row.text() else None
+        fg = Path(self._fg_row.text()) if self._fg_row.text() else None
+        return bg, self._current_layer_crop("background"), fg, self._current_layer_crop("foreground")
+
+    def _refresh_layer_row_state(self, layer_key: str) -> None:
+        self._layer_row(layer_key).set_cropped(self._current_layer_crop(layer_key) is not None)
+
+    def _set_layer_selection(self, layer_key: str, path: Path, crop_box: CropBox | None = None) -> None:
+        row = self._layer_row(layer_key)
+        row.set_text(str(path))
+        self._layer_crops[layer_key].clear()
+        if crop_box is not None:
+            self._layer_crops[layer_key][self._current_preset_id] = crop_box
+        self._refresh_layer_row_state(layer_key)
+
+    def _clear_layer_selection(self, layer_key: str) -> None:
+        self._layer_row(layer_key).clear()
+        self._layer_crops[layer_key].clear()
+        self._refresh_layer_row_state(layer_key)
+
+    def _normalize_crop_box(self, path: Path, crop_box: CropBox) -> CropBox | None:
+        with Image.open(path) as image:
+            full_box = (0, 0, image.width, image.height)
+            preset = get_layout_preset(self._current_preset_id)
+            if crop_box == full_box and aspect_ratio_matches(image.size, preset):
+                return None
+        return crop_box
+
+    def _image_requires_crop(self, path: Path) -> bool:
+        preset = get_layout_preset(self._current_preset_id)
+        with Image.open(path) as image:
+            return not aspect_ratio_matches(image.size, preset)
+
+    def _run_crop_dialog(
+        self,
+        layer_key: str,
+        path: Path,
+        initial_crop_box: CropBox | None,
+    ) -> tuple[bool, CropBox | None]:
+        dialog = CropDialog(
+            path,
+            self._layer_label(layer_key),
+            self._current_preset_id,
+            get_layout_preset(self._current_preset_id).canvas_size,
+            initial_crop_box=initial_crop_box,
+            parent=self,
+        )
+        if dialog.exec() != dialog.DialogCode.Accepted:
+            return False, None
+        return True, self._normalize_crop_box(path, dialog.crop_box())
+
+    def _select_layer_file(self, layer_key: str, title: str) -> None:
+        path_str, _ = QFileDialog.getOpenFileName(self, title, "", "Images (*.png *.jpg *.jpeg *.webp)")
+        if not path_str:
+            return
+
+        path = Path(path_str)
+        try:
+            crop_box = None
+            if self._image_requires_crop(path):
+                accepted, crop_box = self._run_crop_dialog(layer_key, path, None)
+                if not accepted:
+                    return
+            self._set_layer_selection(layer_key, path, crop_box)
+            self._invalidate_layer_cache()
+            self._update_state()
+        except Exception as exc:
+            QMessageBox.warning(self, "警告", str(exc))
+
+    def _edit_layer_crop(self, layer_key: str) -> None:
+        row = self._layer_row(layer_key)
+        if not row.text():
+            return
+        path = Path(row.text())
+        try:
+            accepted, crop_box = self._run_crop_dialog(layer_key, path, self._current_layer_crop(layer_key))
+            if not accepted:
+                return
+            if crop_box is None:
+                self._layer_crops[layer_key].pop(self._current_preset_id, None)
+            else:
+                self._layer_crops[layer_key][self._current_preset_id] = crop_box
+            self._refresh_layer_row_state(layer_key)
+            self._invalidate_layer_cache()
+            self._update_state()
+        except Exception as exc:
+            QMessageBox.warning(self, "警告", str(exc))
 
     def _invalidate_layer_cache(self) -> None:
         self._layer_cache_key = None
         self._layer_cache = None
 
     def _get_loaded_layers(self) -> tuple[Image.Image | None, Image.Image | None]:
-        background_path, foreground_path = self._selected_layer_paths()
-        cache_key = (
-            self._current_preset_id,
-            str(background_path or ""),
-            str(foreground_path or ""),
-        )
-        if cache_key != self._layer_cache_key:
+        bg, bg_crop, fg, fg_crop = self._selected_layer_specs()
+        key = (self._current_preset_id, str(bg or ""), str(bg_crop or ""), str(fg or ""), str(fg_crop or ""))
+        if key != self._layer_cache_key:
             self._layer_cache = load_layers(
                 self._current_preset_id,
-                background_path=background_path,
-                foreground_path=foreground_path,
+                background_path=bg,
+                foreground_path=fg,
+                background_crop_box=bg_crop,
+                foreground_crop_box=fg_crop,
             )
-            self._layer_cache_key = cache_key
+            self._layer_cache_key = key
         assert self._layer_cache is not None
         return self._layer_cache
 
@@ -235,148 +493,133 @@ class MainWindow(QMainWindow):
             return str(exc)
         return None
 
-    def _set_preview_text(self, message: str) -> None:
-        self.preview_label.setPixmap(QPixmap())
-        self.preview_label.setText(message)
-
-    def _update_preset_hint(self) -> None:
-        preset = get_layout_preset(self._current_preset_id)
-        width, height = preset.canvas_size
-        self.preset_hint.setText(
-            f"固定輸出畫布：{preset.preset_id} ({width} x {height}) | 前景白底可自動處理，輸出固定補白底"
-        )
-
+    # ── Actions ─────────────────────────────────────────────────────────
     def _on_preset_selected(self, preset_id: str) -> None:
         self._current_preset_id = preset_id
-        self._update_preset_hint()
+        # Enforce exclusivity — PresetButton is not a QAbstractButton, so we
+        # do this manually instead of via QButtonGroup.
+        for pid, btn in self._preset_button_refs.items():
+            btn.setChecked(pid == preset_id)
+        self._refresh_hint()
+        self._apply_preset_to_preview()
+        self._refresh_layer_row_state("background")
+        self._refresh_layer_row_state("foreground")
         self._invalidate_layer_cache()
         self._update_state()
 
-    def _on_offset_x_changed(self, value: int):
-        self.offset_x_value.setText(f"{value} px")
-        self._schedule_preview()
+    def _on_reset_adjust(self) -> None:
+        self._offset_x.set_value(0)
+        self._offset_y.set_value(0)
+        self._scale.set_value(100)
 
-    def _on_offset_y_changed(self, value: int):
-        self.offset_y_value.setText(f"{value} px")
-        self._schedule_preview()
-
-    def _on_scale_changed(self, value: int):
-        self.scale_value.setText(f"{value} %")
-        self._schedule_preview()
-
-    def _on_reset_adjust(self):
-        self.offset_x_slider.setValue(0)
-        self.offset_y_slider.setValue(0)
-        self.scale_slider.setValue(100)
-
-    def _schedule_preview(self):
-        if self._has_selected_layers() and self.input_row.text():
+    def _schedule_preview(self) -> None:
+        if self._has_selected_layers():
             self._preview_timer.start()
 
-    def _browse_background(self):
-        path, _ = QFileDialog.getOpenFileName(
-            self, "選擇後景底圖", "", "Images (*.png *.jpg *.jpeg *.webp)"
-        )
-        if path:
-            self.background_row.set_text(path)
-            self._invalidate_layer_cache()
-            self._update_state()
+    def _browse_background(self) -> None:
+        self._select_layer_file("background", "選擇後景底圖")
 
-    def _browse_foreground(self):
-        path, _ = QFileDialog.getOpenFileName(
-            self, "選擇前景套框", "", "Images (*.png *.jpg *.jpeg *.webp)"
-        )
-        if path:
-            self.foreground_row.set_text(path)
-            self._invalidate_layer_cache()
-            self._update_state()
+    def _browse_foreground(self) -> None:
+        self._select_layer_file("foreground", "選擇前景套框")
 
-    def _browse_input(self):
+    def _crop_background(self) -> None:
+        self._edit_layer_crop("background")
+
+    def _crop_foreground(self) -> None:
+        self._edit_layer_crop("foreground")
+
+    def _clear_background(self) -> None:
+        self._clear_layer_selection("background")
+        self._invalidate_layer_cache()
+        self._update_state()
+
+    def _clear_foreground(self) -> None:
+        self._clear_layer_selection("foreground")
+        self._invalidate_layer_cache()
+        self._update_state()
+
+    def _browse_input(self) -> None:
         path = QFileDialog.getExistingDirectory(self, "選擇商品資料夾")
         if path:
-            self.input_row.set_text(path)
+            self._input_row.set_text(path)
             self._update_state()
 
-    def _browse_output(self):
+    def _browse_output(self) -> None:
         path = QFileDialog.getExistingDirectory(self, "選擇輸出資料夾")
         if path:
-            self.output_row.set_text(path)
+            self._output_row.set_text(path)
             self._update_state()
 
-    def _update_state(self):
+    def _update_state(self) -> None:
         has_layers = self._has_selected_layers()
-        input_ok = bool(self.input_row.text())
-        output_ok = bool(self.output_row.text())
+        input_ok = bool(self._input_row.text())
+        output_ok = bool(self._output_row.text())
         layer_error = self._validate_layers() if has_layers else None
+        running = self._worker is not None and self._worker.isRunning()
 
-        if self._worker is None or not self._worker.isRunning():
-            self.start_button.setEnabled(has_layers and input_ok and output_ok and layer_error is None)
+        if not running:
+            can_start = has_layers and input_ok and output_ok and layer_error is None
+            self._action_btn.set_mode(ActionButton.MODE_IDLE, enabled=can_start)
 
-        if has_layers and input_ok:
+        if has_layers:
             self._update_preview()
-        elif layer_error:
-            self._set_preview_text(f"預覽失敗：{layer_error}")
         elif input_ok and not has_layers:
-            self._set_preview_text("請至少選擇前景套框或後景底圖。")
+            self._preview.set_status("請至少選擇前景套框或後景底圖。")
         else:
-            self._set_preview_text("選擇輸出比例、至少一個景圖與商品資料夾後，將自動預覽白底輸出結果")
+            self._preview.set_status("選擇輸出比例與圖層後\n自動顯示合成預覽")
 
-    def _update_preview(self):
-        if not self.input_row.text():
-            self._set_preview_text("選擇商品資料夾後，將自動預覽白底輸出結果")
-            return
+    def _update_preview(self) -> None:
         if not self._has_selected_layers():
-            self._set_preview_text("請至少選擇前景套框或後景底圖。")
-            return
-
-        input_dir = Path(self.input_row.text())
-        products = list_products(input_dir)
-        if not products:
-            self._set_preview_text("資料夾內沒有找到圖片檔案")
+            self._preview.set_status("請至少選擇前景套框或後景底圖。")
             return
 
         try:
             background, foreground = self._get_loaded_layers()
-            ox, oy, scale = self._current_adjust()
-            composite = build_composite(
-                self._current_preset_id,
-                products[0],
-                background=background,
-                foreground=foreground,
-                offset_x=ox,
-                offset_y=oy,
-                scale=scale,
-            )
-            pixmap = pil_to_qpixmap(composite)
-            scaled = pixmap.scaled(
-                self.preview_label.size(),
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation,
-            )
-            self.preview_label.setText("")
-            self.preview_label.setPixmap(scaled)
+            if self._input_row.text():
+                input_dir = Path(self._input_row.text())
+                products = list_products(input_dir)
+                if not products:
+                    self._preview.set_status("資料夾內沒有找到圖片檔案", error=True)
+                    return
+                ox, oy, scale = self._current_adjust()
+                composite = build_composite(
+                    self._current_preset_id,
+                    products[0],
+                    background=background,
+                    foreground=foreground,
+                    offset_x=ox,
+                    offset_y=oy,
+                    scale=scale,
+                )
+            else:
+                composite = build_layer_preview(
+                    self._current_preset_id,
+                    background=background,
+                    foreground=foreground,
+                )
+            self._preview.set_pixmap(pil_to_qpixmap(composite))
         except Exception as exc:
-            self._set_preview_text(f"預覽失敗：{exc}")
+            self._preview.set_status(f"預覽失敗\n{exc}", error=True)
 
-    def _on_start_clicked(self):
+    def _on_start_clicked(self) -> None:
         if self._worker is not None and self._worker.isRunning():
             self._worker.cancel()
             return
 
-        if not self.input_row.text():
+        if not self._input_row.text():
             QMessageBox.warning(self, "警告", "請先選擇商品資料夾。")
             return
-        if not self.output_row.text():
+        if not self._output_row.text():
             QMessageBox.warning(self, "警告", "請先選擇輸出資料夾。")
             return
 
-        background_path, foreground_path = self._selected_layer_paths()
-        if background_path is None and foreground_path is None:
+        bg, bg_crop, fg, fg_crop = self._selected_layer_specs()
+        if bg is None and fg is None:
             QMessageBox.warning(self, "警告", "請至少選擇前景套框或後景底圖。")
             return
 
-        input_dir = Path(self.input_row.text())
-        output_dir = Path(self.output_row.text())
+        input_dir = Path(self._input_row.text())
+        output_dir = Path(self._output_row.text())
         products = list_products(input_dir)
         if not products:
             QMessageBox.warning(self, "警告", "商品資料夾內沒有圖片檔案。")
@@ -387,6 +630,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "警告", layer_error)
             return
 
+        self._status_pill.setVisible(False)
         self._set_processing(True, len(products))
 
         ox, oy, scale = self._current_adjust()
@@ -394,8 +638,10 @@ class MainWindow(QMainWindow):
             self._current_preset_id,
             input_dir,
             output_dir,
-            background_path=background_path,
-            foreground_path=foreground_path,
+            background_path=bg,
+            foreground_path=fg,
+            background_crop_box=bg_crop,
+            foreground_crop_box=fg_crop,
             offset_x=ox,
             offset_y=oy,
             scale=scale,
@@ -406,51 +652,64 @@ class MainWindow(QMainWindow):
         self._worker.error.connect(self._on_error)
         self._worker.start()
 
-    def _set_processing(self, running: bool, total: int = 0):
-        self.preset_group.setEnabled(not running)
-        self.background_row.setEnabled(not running)
-        self.foreground_row.setEnabled(not running)
-        self.input_row.setEnabled(not running)
-        self.output_row.setEnabled(not running)
-        self.adjust_group.setEnabled(not running)
+    def _set_processing(self, running: bool, total: int = 0) -> None:
+        # Disable inputs (not the action button)
+        for w in (self._bg_row, self._fg_row, self._input_row, self._output_row,
+                  self._offset_x, self._offset_y, self._scale):
+            w.setEnabled(not running)
+        for btn in self._preset_button_refs.values():
+            btn.setEnabled(not running)
 
-        self.progress_bar.setVisible(running)
-        self.progress_label.setVisible(running)
+        self._progress_box.setVisible(running)
         if running:
-            self.progress_bar.setMaximum(total)
-            self.progress_bar.setValue(0)
-            self.progress_label.setText(f"處理中 0/{total}...")
-            self.start_button.setText("取消")
-            self.start_button.setEnabled(True)
+            self._progress_total = total
+            self._progress_count.setText(f"0/{total}")
+            self._update_progress_fill(0, total)
+            self._action_btn.set_mode(ActionButton.MODE_RUNNING, enabled=True)
         else:
-            self.start_button.setText("開始套框")
+            self._progress_total = 0
+            self._update_state()
 
-    def _on_progress(self, current: int, total: int, output_path: str):
-        self.progress_bar.setValue(current)
-        self.progress_label.setText(f"處理中 {current}/{total}...")
+    def _update_progress_fill(self, current: int, total: int) -> None:
+        track_w = max(1, self._progress_track.width())
+        ratio = (current / total) if total else 0
+        self._progress_fill.setGeometry(0, 0, int(track_w * ratio), 3)
 
-    def _on_finished(self):
-        total = self.progress_bar.maximum()
+    def _on_progress(self, current: int, total: int, output_path: str) -> None:
+        self._progress_count.setText(f"{current}/{total}")
+        self._update_progress_fill(current, total)
+
+    def _on_finished(self) -> None:
+        total = getattr(self, "_progress_total", 0)
         self._set_processing(False)
-        self._update_state()
-        output_dir = self.output_row.text()
-        QMessageBox.information(
-            self, "完成", f"已完成 {total} 張圖片套框！\n輸出位置：{output_dir}"
-        )
+        self._status_pill_label.setText(f"完成！{total} 張已輸出")
+        self._status_pill.setVisible(True)
+        output_dir = self._output_row.text()
+        QMessageBox.information(self, "完成", f"已完成 {total} 張圖片套框！\n輸出位置：{output_dir}")
 
-    def _on_cancelled(self):
-        current = self.progress_bar.value()
-        total = self.progress_bar.maximum()
+    def _on_cancelled(self) -> None:
+        # Grab completed count before resetting progress widgets.
+        try:
+            current = int(self._progress_count.text().split("/")[0])
+        except Exception:
+            current = 0
+        total = getattr(self, "_progress_total", 0)
         self._set_processing(False)
-        self._update_state()
         QMessageBox.information(self, "已取消", f"已取消處理，目前已完成 {current}/{total} 張圖片。")
 
-    def _on_error(self, message: str):
+    def _on_error(self, message: str) -> None:
         self._set_processing(False)
-        self._update_state()
         QMessageBox.critical(self, "錯誤", f"處理時發生錯誤：\n{message}")
 
+    # ── Events ──────────────────────────────────────────────────────────
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        if self._has_selected_layers() and self.input_row.text():
+        if self._has_selected_layers():
             self._update_preview()
+        # Re-fit the progress bar fill on resize
+        if self._progress_box.isVisible():
+            try:
+                cur, total = self._progress_count.text().split("/")
+                self._update_progress_fill(int(cur), int(total))
+            except Exception:
+                pass

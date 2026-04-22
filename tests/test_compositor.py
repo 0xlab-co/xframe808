@@ -10,6 +10,7 @@ from core.compositor import (
     BOX_PADDING,
     batch_composite,
     build_composite,
+    build_layer_preview,
     flatten_on_white,
     get_layout_preset,
     list_products,
@@ -134,6 +135,15 @@ class CompositorTests(unittest.TestCase):
         self.assertEqual(foreground.getpixel((5, 5))[3], 0)
         self.assertEqual(foreground.getpixel((540, 540)), (255, 0, 0, 255))
 
+    def test_load_layer_accepts_crop_box_from_wrong_ratio_image(self):
+        background_path = self.make_image("wide.png", (200, 100), (255, 0, 0, 255))
+
+        background = load_layer(background_path, "1:1", "後景底圖", crop_box=(50, 0, 150, 100))
+
+        assert background is not None
+        self.assertEqual(background.size, (1080, 1080))
+        self.assertEqual(background.getpixel((12, 12)), (255, 0, 0, 255))
+
     def test_list_products_accepts_uppercase_extensions(self):
         input_dir = self.tmp_path / "products"
         input_dir.mkdir()
@@ -178,6 +188,17 @@ class CompositorTests(unittest.TestCase):
         self.assertEqual(result.getpixel((5, 5)), (255, 255, 255, 255))
         self.assertEqual(result.getpixel(center), (0, 255, 0, 255))
 
+    def test_build_layer_preview_flattens_layers_without_product(self):
+        preset = get_layout_preset("1:1")
+        foreground = Image.new("RGBA", preset.canvas_size, (0, 0, 255, 128))
+
+        result = build_layer_preview("1:1", foreground=foreground)
+
+        self.assertEqual(
+            result.getpixel((8, 8)),
+            composite_pixel((255, 255, 255, 255), (0, 0, 255, 128)),
+        )
+
     def test_batch_composite_normalizes_same_ratio_layers(self):
         preset = get_layout_preset("9:16")
         input_dir = self.tmp_path / "input"
@@ -214,6 +235,35 @@ class CompositorTests(unittest.TestCase):
                 result.getpixel(center),
                 composite_pixel((0, 255, 0, 255), (0, 0, 255, 128)),
             )
+
+    def test_batch_composite_accepts_crop_box_for_wrong_ratio_background(self):
+        preset = get_layout_preset("1:1")
+        input_dir = self.tmp_path / "input_crop"
+        output_dir = self.tmp_path / "output_crop"
+        input_dir.mkdir()
+
+        product_path = input_dir / "product.png"
+        Image.new("RGBA", (100, 100), (0, 255, 0, 255)).save(product_path)
+        background_path = self.make_image("wide_bg.png", (200, 100), (255, 0, 0, 255))
+
+        progress = list(
+            batch_composite(
+                "1:1",
+                input_dir,
+                output_dir,
+                background_path=background_path,
+                background_crop_box=(50, 0, 150, 100),
+            )
+        )
+
+        self.assertEqual(len(progress), 1)
+        output_path = progress[0][2]
+        with Image.open(output_path) as result:
+            left, top, right, bottom = preset.safe_box
+            center = ((left + right) // 2, (top + bottom) // 2)
+            self.assertEqual(result.size, preset.canvas_size)
+            self.assertEqual(result.getpixel((5, 5)), (255, 0, 0, 255))
+            self.assertEqual(result.getpixel(center), (0, 255, 0, 255))
 
 
 if __name__ == "__main__":
