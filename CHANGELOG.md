@@ -4,22 +4,40 @@
 
 ## [3.3.0] - 2026-04-23
 
+本版改動微調模型：原本側邊欄單一全域「位置微調」被拆成**前景 / 後景 / 商品**三組獨立微調，商品微調並以每張檔案各自保存位置。右側預覽新增商品縮圖列，可直接點選要獨立調整的商品。
+
 ### Added
 
-- 商品微調新增「套用全部」按鈕：可把目前商品的 X / Y 位移與縮放一次複製到整個商品資料夾，之後仍可回到單張商品再個別覆寫。
+#### 每層 / 每商品獨立微調
+- 新增 `LayerTransform` dataclass（`offset_x`、`offset_y`、`scale`）與 `IDENTITY_TRANSFORM`，取代舊版全域 `offset_x / offset_y / scale` scalar。
+- 前景套框、後景底圖各自擁有一組 `LayerTransform`，整批商品共用；以畫布中心為錨點縮放，位移上限 ±300 px、縮放 50%~150%。
+- 商品微調以 `dict[Path, LayerTransform]` 依檔案路徑保存；切換縮圖時自動帶出該張商品上次的位移 / 縮放。
+- `core/compositor.py` 的 `build_composite_frame` / `build_composite` / `build_layer_preview` / `batch_composite` / `_process_video_product` 全部改吃 `background_transform` / `foreground_transform` / `product_transform(s)` kwargs；`CompositeWorker` 同步換簽章。
+- 切換 preset 或輸入資料夾時會自動清除全部微調（位移單位是畫布像素，跨 preset 無意義）。
+
+#### 商品縮圖列
+- 右側預覽下方新增 `ThumbnailStrip`：橫向顯示商品資料夾內所有檔案，影片以首幀作縮圖並加上小 badge。
+- 點縮圖切換目前預覽的商品、同時展開商品微調面板。
+- 水平捲動採 bar 式 scrollbar，滑鼠滾輪會優先轉成水平捲動，避免在縮圖列上滾到頁面。
+
+#### 套用全部
+- 商品微調面板新增「套用全部」按鈕：把目前商品的 X / Y 位移與縮放一次複製到整個商品資料夾；之後仍可回到單張商品個別覆寫。
+
+#### 可收合面板
+- 新增 `CollapsibleSection` + 統一的 `TransformPanel`（前景 / 後景 / 商品皆使用）：預設收攏，header 使用箭頭 toggle，`重置` 置於面板底部 footer，避免收攏狀態誤觸。
+- 前景 / 後景微調掛在 sidebar 對應 `PathRow` 下方，並以卡片視覺分群；商品微調掛在右側預覽縮圖列下方。
+
+#### 測試
+- 新增 6 項 `LayerTransform` 相關測試：identity 與 legacy 輸出逐像素一致、背景 offset 像素驗證、前景 scale 半縮、per-path 商品字典、空字典 fallback 至 identity、`build_layer_preview` 支援 layer transforms。
 
 ### Changed
 
-- 左側前景 / 後景微調與右側商品微調統一成同一套 `TransformPanel` 視覺與互動：
-  - header 改為大尺寸箭頭收合按鈕
-  - `重置` 移到面板底部 footer，降低誤觸
-  - 商品微調移除額外副標與多餘底色，和圖層微調保持一致
-- 商品縮圖列的水平捲動體驗調整為 bar 式 scrollbar，滑鼠滾輪會優先轉成水平捲動。
-- 切換商品縮圖時不再強制自動展開商品微調，避免右側面板頻繁跳動。
+- 側邊欄移除原本單一「位置微調」區塊，滑桿控制元件改為各自緊貼其影響的圖層 / 商品，並預設收攏以減少視覺噪音。
+- 批次執行中所有微調面板與滑桿會一起 disabled，取消按鈕行為不變。
 
 ### Docs
 
-- README 補上前景 / 後景 / 商品微調的使用方式、商品縮圖列、套用全部商品的流程說明。
+- README 補上前景 / 後景 / 商品微調的使用方式、商品縮圖列、套用全部商品的流程說明，並註明切 preset 會清除微調。
 - `scripts/build_mac.sh`、`scripts/build_win.bat`、`.github/workflows/build.yml` 同步補上 `--collect-all imageio_ffmpeg`，配合 v3.2 的影片打包需求；README 影片章節同步改為「已預先帶上此參數」。
 
 ## [3.2.0] - 2026-04-22

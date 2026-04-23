@@ -130,6 +130,7 @@ xattr -cr ~/Downloads/xFRAME808.app
 - 「套用全部」會把目前這張商品的微調值複製到整個商品資料夾
 - 套用全部後，仍可回到個別商品再做不同的微調覆寫
 - 每個微調面板都可收合，`重置` 按鈕位於面板底部
+- 切換輸出比例會清除所有前景 / 後景 / 商品微調（位移單位是畫布像素，不同 preset 之間無法直接沿用）
 
 ## 比例 Preset
 
@@ -201,7 +202,7 @@ REM 產出 dist\xFRAME808\xFRAME808.exe
 要額外產出 `Setup.exe` 安裝檔，請先安裝 [Inno Setup 6](https://jrsoftware.org/isinfo.php)（免費），再執行：
 
 ```cmd
-"C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DAppVersion=3.2.0 scripts\installer.iss
+"C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DAppVersion=3.3.0 scripts\installer.iss
 REM 產出 dist\installer\xFRAME808-Windows-Setup.exe
 ```
 
