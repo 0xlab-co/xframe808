@@ -32,6 +32,7 @@ jobs:
           pyinstaller --noconfirm --onedir --windowed \
             --name "xFRAME808" \
             --osx-bundle-identifier "com.0xlab.xframe808" \
+            --collect-all imageio_ffmpeg \
             main.py
 
       - name: Package ZIP
@@ -70,7 +71,7 @@ jobs:
 
       - name: Build .exe
         run: |
-          pyinstaller --noconfirm --onedir --windowed --name "xFRAME808" main.py
+          pyinstaller --noconfirm --onedir --windowed --name "xFRAME808" --collect-all imageio_ffmpeg main.py
 
       - name: Package ZIP
         shell: pwsh

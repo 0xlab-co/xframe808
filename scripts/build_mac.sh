@@ -10,6 +10,7 @@ cd "$(dirname "$0")/.."
 pyinstaller --noconfirm --onedir --windowed \
   --name "xFRAME808" \
   --osx-bundle-identifier "com.0xlab.xframe808" \
+  --collect-all imageio_ffmpeg \
   main.py
 
 cd dist

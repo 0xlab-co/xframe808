@@ -2,7 +2,7 @@
 REM Windows 本機打包腳本
 REM 使用前請先建立虛擬環境：python -m venv .venv && .venv\Scripts\activate && pip install -r requirements.txt pyinstaller
 
-pyinstaller --noconfirm --onedir --windowed --name "xFRAME808" main.py
+pyinstaller --noconfirm --onedir --windowed --name "xFRAME808" --collect-all imageio_ffmpeg main.py
 
 if %ERRORLEVEL% NEQ 0 (
     echo.
