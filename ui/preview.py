@@ -3,7 +3,9 @@ currently computed composite pixmap with aspect-ratio fit.
 """
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QRectF
+from pathlib import Path
+
+from PySide6.QtCore import Qt, QRectF, Signal
 from PySide6.QtGui import QColor, QPainter, QPixmap, QBrush, QPen
 from PySide6.QtWidgets import (
     QFrame,
@@ -13,8 +15,10 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from core.compositor import IDENTITY_TRANSFORM, LayerTransform
 from ui import theme
-from ui.widgets import IconLabel
+from ui.thumbnail_strip import ThumbnailStrip
+from ui.widgets import IconLabel, TransformPanel
 
 
 class _Canvas(QWidget):
@@ -117,6 +121,10 @@ class _Canvas(QWidget):
 
 
 class PreviewPane(QFrame):
+    thumbnail_clicked = Signal(str)
+    product_transform_changed = Signal(LayerTransform)
+    apply_product_transform_to_all_requested = Signal()
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setStyleSheet(
@@ -160,6 +168,56 @@ class PreviewPane(QFrame):
         self._canvas = _Canvas()
         root.addWidget(self._canvas, 1)
 
+        # Thumbnail strip + per-product transform panel
+        self._thumbnails = ThumbnailStrip()
+        self._thumbnails.thumbnail_clicked.connect(self.thumbnail_clicked.emit)
+        root.addWidget(self._thumbnails)
+
+        panel_wrap = QFrame()
+        panel_wrap.setObjectName("ProductAdjustArea")
+        panel_wrap.setStyleSheet(
+            f"#ProductAdjustArea {{ background: {theme.BG_PANEL}; border-top: 1px solid {theme.BORDER}; }}"
+        )
+        panel_layout = QVBoxLayout(panel_wrap)
+        panel_layout.setContentsMargins(14, 12, 14, 14)
+        panel_layout.setSpacing(0)
+
+        product_card = QFrame()
+        product_card.setObjectName("ProductAdjustCard")
+        product_card.setStyleSheet(
+            f"""
+            #ProductAdjustCard {{
+                background: {theme.BG_ELEVATED};
+                border: 1px solid {theme.BORDER};
+                border-radius: {theme.RADIUS}px;
+            }}
+            """
+        )
+        product_card_layout = QVBoxLayout(product_card)
+        product_card_layout.setContentsMargins(12, 12, 12, 12)
+        product_card_layout.setSpacing(0)
+
+        self._product_panel = TransformPanel(
+            "商品微調",
+            "Product adjust",
+            icon_name="sliders",
+            collapsed=True,
+            show_subtitle=False,
+            extra_footer_button_text="套用全部",
+        )
+        self._product_panel.transform_changed.connect(self.product_transform_changed.emit)
+        self._product_panel.extra_action_requested.connect(
+            self.apply_product_transform_to_all_requested.emit
+        )
+        self._product_panel.setEnabled(False)
+        self._product_panel.set_extra_action_enabled(False)
+        product_card_layout.addWidget(self._product_panel)
+        panel_layout.addWidget(product_card)
+        root.addWidget(panel_wrap)
+
+        self._product_count = 0
+
+    # ── External API ───────────────────────────────────────────────────
     def set_preset(self, preset_id: str, canvas_size: tuple[int, int]) -> None:
         w, h = canvas_size
         self._canvas.set_aspect_ratio(w, h)
@@ -170,3 +228,38 @@ class PreviewPane(QFrame):
 
     def set_status(self, message: str, *, error: bool = False) -> None:
         self._canvas.set_status(message, error=error)
+
+    def set_products(self, paths: list[Path]) -> None:
+        self._product_count = len(paths)
+        self._thumbnails.set_products(paths)
+        if not paths:
+            self._product_panel.set_subtitle("")
+            self._product_panel.set_transform(IDENTITY_TRANSFORM)
+            self._product_panel.set_collapsed(True)
+            self._product_panel.setEnabled(False)
+            self._product_panel.set_extra_action_enabled(False)
+
+    def set_current_product(
+        self,
+        path: Path | None,
+        transform: LayerTransform,
+        *,
+        expand: bool = True,
+    ) -> None:
+        self._thumbnails.set_selected(str(path) if path else None)
+        if path is None:
+            self._product_panel.set_subtitle("")
+            self._product_panel.set_transform(IDENTITY_TRANSFORM)
+            self._product_panel.set_collapsed(True)
+            self._product_panel.setEnabled(False)
+            self._product_panel.set_extra_action_enabled(False)
+            return
+        self._product_panel.setEnabled(True)
+        self._product_panel.set_subtitle(path.name)
+        self._product_panel.set_transform(transform)
+        self._product_panel.set_extra_action_enabled(self._product_count > 1)
+        if expand:
+            self._product_panel.set_collapsed(False)
+
+    def product_panel(self) -> TransformPanel:
+        return self._product_panel

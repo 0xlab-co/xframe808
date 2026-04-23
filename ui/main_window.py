@@ -12,7 +12,6 @@ from PySide6.QtWidgets import (
     QLabel,
     QMainWindow,
     QMessageBox,
-    QPushButton,
     QScrollArea,
     QVBoxLayout,
     QWidget,
@@ -20,6 +19,8 @@ from PySide6.QtWidgets import (
 
 from core.compositor import (
     CropBox,
+    IDENTITY_TRANSFORM,
+    LayerTransform,
     PRESET_ORDER,
     aspect_ratio_matches,
     build_composite,
@@ -37,7 +38,7 @@ from ui.widgets import (
     PathRow,
     PresetButton,
     SectionHeader,
-    SliderRow,
+    TransformPanel,
 )
 from ui.worker import CompositeWorker
 
@@ -75,6 +76,11 @@ class MainWindow(QMainWindow):
             "background": {},
             "foreground": {},
         }
+        self._bg_transform: LayerTransform = IDENTITY_TRANSFORM
+        self._fg_transform: LayerTransform = IDENTITY_TRANSFORM
+        self._product_transforms: dict[str, LayerTransform] = {}
+        self._current_product_path: Path | None = None
+        self._products: list[Path] = []
 
         central = QWidget()
         central.setStyleSheet(f"background: {theme.BG_BASE};")
@@ -86,6 +92,11 @@ class MainWindow(QMainWindow):
 
         root.addWidget(self._build_sidebar(), 0)
         self._preview = PreviewPane()
+        self._preview.thumbnail_clicked.connect(self._on_thumbnail_clicked)
+        self._preview.product_transform_changed.connect(self._on_product_transform_changed)
+        self._preview.apply_product_transform_to_all_requested.connect(
+            self._on_apply_product_transform_to_all
+        )
         root.addWidget(self._preview, 1)
 
         self._preview_timer = QTimer(self)
@@ -127,8 +138,6 @@ class MainWindow(QMainWindow):
         content_layout.addWidget(self._build_layers_section())
         content_layout.addWidget(self._divider())
         content_layout.addWidget(self._build_folders_section())
-        content_layout.addWidget(self._divider())
-        content_layout.addWidget(self._build_adjust_section())
         content_layout.addStretch(1)
 
         scroll.setWidget(content)
@@ -214,9 +223,46 @@ class MainWindow(QMainWindow):
         self._fg_row.browse_requested.connect(self._browse_foreground)
         self._fg_row.crop_requested.connect(self._crop_foreground)
         self._fg_row.clear_requested.connect(self._clear_foreground)
-        v.addWidget(self._bg_row)
-        v.addWidget(self._fg_row)
+
+        self._bg_transform_panel = TransformPanel(
+            "後景微調", "Background adjust", icon_name="sliders", collapsed=True
+        )
+        self._bg_transform_panel.transform_changed.connect(self._on_bg_transform_changed)
+        self._bg_transform_panel.setEnabled(False)
+
+        self._fg_transform_panel = TransformPanel(
+            "前景微調", "Foreground adjust", icon_name="sliders", collapsed=True
+        )
+        self._fg_transform_panel.transform_changed.connect(self._on_fg_transform_changed)
+        self._fg_transform_panel.setEnabled(False)
+
+        v.addWidget(self._build_layer_group(self._bg_row, self._bg_transform_panel))
+        v.addWidget(self._build_layer_group(self._fg_row, self._fg_transform_panel))
         return container
+
+    def _build_layer_group(self, row: PathRow, panel: TransformPanel) -> QWidget:
+        card = QFrame()
+        card.setObjectName("LayerGroup")
+        card.setStyleSheet(
+            f"""
+            #LayerGroup {{
+                background: {theme.BG_ELEVATED};
+                border: 1px solid {theme.BORDER};
+                border-radius: {theme.RADIUS}px;
+            }}
+            """
+        )
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(10)
+        layout.addWidget(row)
+
+        divider = QFrame()
+        divider.setFixedHeight(1)
+        divider.setStyleSheet(f"background: {theme.BORDER}; border: none;")
+        layout.addWidget(divider)
+        layout.addWidget(panel)
+        return card
 
     def _build_folders_section(self) -> QWidget:
         container = QWidget()
@@ -232,49 +278,6 @@ class MainWindow(QMainWindow):
         self._output_row.browse_requested.connect(self._browse_output)
         v.addWidget(self._input_row)
         v.addWidget(self._output_row)
-        return container
-
-    def _build_adjust_section(self) -> QWidget:
-        container = QWidget()
-        v = QVBoxLayout(container)
-        v.setContentsMargins(0, 0, 0, 18)
-        v.setSpacing(14)
-
-        reset_btn = QPushButton("重置  Reset")
-        reset_btn.setFixedHeight(28)
-        reset_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        reset_btn.setStyleSheet(
-            f"""
-            QPushButton {{
-                background: {theme.BG_ELEVATED};
-                border: 1px solid {theme.BORDER};
-                border-radius: {theme.RADIUS_SM}px;
-                color: {theme.TEXT_SECONDARY};
-                font-size: 11px;
-                font-weight: 500;
-                padding: 0 12px;
-            }}
-            QPushButton:hover {{
-                background: {theme.BG_HOVER};
-                border-color: {theme.BORDER_STRONG};
-                color: {theme.TEXT_PRIMARY};
-            }}
-            """
-        )
-        reset_btn.clicked.connect(self._on_reset_adjust)
-        v.addWidget(SectionHeader("sliders", "位置微調", "Adjust", action=reset_btn))
-
-        self._offset_x = SliderRow("X 位移", "Offset X", -300, 300, 0, lambda v: f"{'+' if v > 0 else ''}{v}px")
-        self._offset_y = SliderRow("Y 位移", "Offset Y", -300, 300, 0, lambda v: f"{'+' if v > 0 else ''}{v}px")
-        self._scale = SliderRow("縮放", "Scale", 50, 150, 100, lambda v: f"{v}%")
-
-        self._offset_x.value_changed.connect(lambda _: self._schedule_preview())
-        self._offset_y.value_changed.connect(lambda _: self._schedule_preview())
-        self._scale.value_changed.connect(lambda _: self._schedule_preview())
-
-        v.addWidget(self._offset_x)
-        v.addWidget(self._offset_y)
-        v.addWidget(self._scale)
         return container
 
     def _build_bottom(self) -> QWidget:
@@ -341,6 +344,14 @@ class MainWindow(QMainWindow):
         self._progress_fill.setStyleSheet(f"background: {theme.ACCENT}; border-radius: 2px;")
         self._progress_fill.setGeometry(0, 0, 0, 3)
         pbl.addWidget(self._progress_track)
+
+        self._frame_label = QLabel("")
+        self._frame_label.setStyleSheet(
+            f"color: {theme.TEXT_MUTED}; font-family: '{mono}'; font-size: 10px;"
+        )
+        self._frame_label.setVisible(False)
+        pbl.addWidget(self._frame_label)
+
         self._progress_box.setVisible(False)
         v.addWidget(self._progress_box)
 
@@ -361,8 +372,10 @@ class MainWindow(QMainWindow):
         preset = get_layout_preset(self._current_preset_id)
         self._preview.set_preset(self._current_preset_id, preset.canvas_size)
 
-    def _current_adjust(self) -> tuple[int, int, float]:
-        return (self._offset_x.value(), self._offset_y.value(), self._scale.value() / 100.0)
+    def _current_product_transform(self) -> LayerTransform:
+        if self._current_product_path is None:
+            return IDENTITY_TRANSFORM
+        return self._product_transforms.get(str(self._current_product_path), IDENTITY_TRANSFORM)
 
     def _has_selected_layers(self) -> bool:
         return bool(self._bg_row.text() or self._fg_row.text())
@@ -383,6 +396,11 @@ class MainWindow(QMainWindow):
 
     def _refresh_layer_row_state(self, layer_key: str) -> None:
         self._layer_row(layer_key).set_cropped(self._current_layer_crop(layer_key) is not None)
+        panel = self._bg_transform_panel if layer_key == "background" else self._fg_transform_panel
+        has_value = bool(self._layer_row(layer_key).text())
+        panel.setEnabled(has_value)
+        if not has_value:
+            panel.set_collapsed(True)
 
     def _set_layer_selection(self, layer_key: str, path: Path, crop_box: CropBox | None = None) -> None:
         row = self._layer_row(layer_key)
@@ -505,12 +523,62 @@ class MainWindow(QMainWindow):
         self._refresh_layer_row_state("background")
         self._refresh_layer_row_state("foreground")
         self._invalidate_layer_cache()
+        # Canvas pixels differ per preset — transforms in old units no longer
+        # make sense. Reset all transforms on preset switch.
+        self._reset_all_transforms()
         self._update_state()
 
-    def _on_reset_adjust(self) -> None:
-        self._offset_x.set_value(0)
-        self._offset_y.set_value(0)
-        self._scale.set_value(100)
+    def _reset_all_transforms(self) -> None:
+        self._bg_transform = IDENTITY_TRANSFORM
+        self._fg_transform = IDENTITY_TRANSFORM
+        self._product_transforms.clear()
+        self._bg_transform_panel.set_transform(IDENTITY_TRANSFORM)
+        self._fg_transform_panel.set_transform(IDENTITY_TRANSFORM)
+        if self._current_product_path is not None:
+            self._preview.set_current_product(
+                self._current_product_path, IDENTITY_TRANSFORM, expand=False
+            )
+
+    def _on_bg_transform_changed(self, t: LayerTransform) -> None:
+        self._bg_transform = t
+        self._schedule_preview()
+
+    def _on_fg_transform_changed(self, t: LayerTransform) -> None:
+        self._fg_transform = t
+        self._schedule_preview()
+
+    def _on_product_transform_changed(self, t: LayerTransform) -> None:
+        if self._current_product_path is None:
+            return
+        key = str(self._current_product_path)
+        if t.is_identity:
+            self._product_transforms.pop(key, None)
+        else:
+            self._product_transforms[key] = t
+        self._schedule_preview()
+
+    def _on_apply_product_transform_to_all(self) -> None:
+        if self._current_product_path is None or not self._products:
+            return
+
+        transform = self._current_product_transform()
+        if transform.is_identity:
+            self._product_transforms.clear()
+        else:
+            self._product_transforms = {str(path): transform for path in self._products}
+
+        self._preview.set_current_product(
+            self._current_product_path,
+            transform,
+            expand=not self._preview.product_panel().is_collapsed(),
+        )
+        self._schedule_preview()
+
+    def _on_thumbnail_clicked(self, path_str: str) -> None:
+        self._current_product_path = Path(path_str)
+        transform = self._product_transforms.get(path_str, IDENTITY_TRANSFORM)
+        self._preview.set_current_product(self._current_product_path, transform, expand=False)
+        self._update_preview()
 
     def _schedule_preview(self) -> None:
         if self._has_selected_layers():
@@ -542,7 +610,31 @@ class MainWindow(QMainWindow):
         path = QFileDialog.getExistingDirectory(self, "選擇商品資料夾")
         if path:
             self._input_row.set_text(path)
+            self._reload_product_list()
             self._update_state()
+
+    def _reload_product_list(self) -> None:
+        input_text = self._input_row.text()
+        if not input_text:
+            self._products = []
+            self._current_product_path = None
+            self._product_transforms.clear()
+            self._preview.set_products([])
+            return
+        try:
+            self._products = list_products(Path(input_text))
+        except Exception:
+            self._products = []
+        # Reset per-product state for a new folder.
+        self._product_transforms.clear()
+        self._current_product_path = self._products[0] if self._products else None
+        self._preview.set_products(self._products)
+        if self._current_product_path is not None:
+            self._preview.set_current_product(
+                self._current_product_path, IDENTITY_TRANSFORM, expand=False
+            )
+        else:
+            self._preview.set_current_product(None, IDENTITY_TRANSFORM, expand=False)
 
     def _browse_output(self) -> None:
         path = QFileDialog.getExistingDirectory(self, "選擇輸出資料夾")
@@ -575,27 +667,29 @@ class MainWindow(QMainWindow):
 
         try:
             background, foreground = self._get_loaded_layers()
+            product_path = self._current_product_path
+            if product_path is None and self._products:
+                product_path = self._products[0]
             if self._input_row.text():
-                input_dir = Path(self._input_row.text())
-                products = list_products(input_dir)
-                if not products:
-                    self._preview.set_status("資料夾內沒有找到圖片檔案", error=True)
+                if not self._products:
+                    self._preview.set_status("資料夾內沒有找到圖片或影片檔案", error=True)
                     return
-                ox, oy, scale = self._current_adjust()
                 composite = build_composite(
                     self._current_preset_id,
-                    products[0],
+                    product_path,
                     background=background,
                     foreground=foreground,
-                    offset_x=ox,
-                    offset_y=oy,
-                    scale=scale,
+                    background_transform=self._bg_transform,
+                    foreground_transform=self._fg_transform,
+                    product_transform=self._current_product_transform(),
                 )
             else:
                 composite = build_layer_preview(
                     self._current_preset_id,
                     background=background,
                     foreground=foreground,
+                    background_transform=self._bg_transform,
+                    foreground_transform=self._fg_transform,
                 )
             self._preview.set_pixmap(pil_to_qpixmap(composite))
         except Exception as exc:
@@ -622,7 +716,7 @@ class MainWindow(QMainWindow):
         output_dir = Path(self._output_row.text())
         products = list_products(input_dir)
         if not products:
-            QMessageBox.warning(self, "警告", "商品資料夾內沒有圖片檔案。")
+            QMessageBox.warning(self, "警告", "商品資料夾內沒有圖片或影片檔案。")
             return
 
         layer_error = self._validate_layers()
@@ -633,7 +727,9 @@ class MainWindow(QMainWindow):
         self._status_pill.setVisible(False)
         self._set_processing(True, len(products))
 
-        ox, oy, scale = self._current_adjust()
+        product_transforms_by_path: dict[Path, LayerTransform] = {
+            Path(k): v for k, v in self._product_transforms.items()
+        }
         self._worker = CompositeWorker(
             self._current_preset_id,
             input_dir,
@@ -642,11 +738,12 @@ class MainWindow(QMainWindow):
             foreground_path=fg,
             background_crop_box=bg_crop,
             foreground_crop_box=fg_crop,
-            offset_x=ox,
-            offset_y=oy,
-            scale=scale,
+            background_transform=self._bg_transform,
+            foreground_transform=self._fg_transform,
+            product_transforms=product_transforms_by_path,
         )
         self._worker.progress.connect(self._on_progress)
+        self._worker.frame_progress.connect(self._on_frame_progress)
         self._worker.completed.connect(self._on_finished)
         self._worker.cancelled.connect(self._on_cancelled)
         self._worker.error.connect(self._on_error)
@@ -654,8 +751,15 @@ class MainWindow(QMainWindow):
 
     def _set_processing(self, running: bool, total: int = 0) -> None:
         # Disable inputs (not the action button)
-        for w in (self._bg_row, self._fg_row, self._input_row, self._output_row,
-                  self._offset_x, self._offset_y, self._scale):
+        for w in (
+            self._bg_row,
+            self._fg_row,
+            self._input_row,
+            self._output_row,
+            self._bg_transform_panel,
+            self._fg_transform_panel,
+            self._preview.product_panel(),
+        ):
             w.setEnabled(not running)
         for btn in self._preset_button_refs.values():
             btn.setEnabled(not running)
@@ -665,9 +769,21 @@ class MainWindow(QMainWindow):
             self._progress_total = total
             self._progress_count.setText(f"0/{total}")
             self._update_progress_fill(0, total)
+            self._frame_label.setVisible(False)
+            self._frame_label.setText("")
             self._action_btn.set_mode(ActionButton.MODE_RUNNING, enabled=True)
         else:
             self._progress_total = 0
+            self._frame_label.setVisible(False)
+            self._frame_label.setText("")
+            # Panel enable state is driven by selection, not just "not running".
+            self._refresh_layer_row_state("background")
+            self._refresh_layer_row_state("foreground")
+            self._preview.set_current_product(
+                self._current_product_path,
+                self._current_product_transform(),
+                expand=False,
+            )
             self._update_state()
 
     def _update_progress_fill(self, current: int, total: int) -> None:
@@ -678,6 +794,17 @@ class MainWindow(QMainWindow):
     def _on_progress(self, current: int, total: int, output_path: str) -> None:
         self._progress_count.setText(f"{current}/{total}")
         self._update_progress_fill(current, total)
+        # A file just finished — clear any lingering frame-level status until
+        # the next video starts emitting frames.
+        self._frame_label.setVisible(False)
+        self._frame_label.setText("")
+
+    def _on_frame_progress(self, current: int, total: int, name: str) -> None:
+        if total <= 0:
+            self._frame_label.setVisible(False)
+            return
+        self._frame_label.setText(f"{name}  ·  {current}/{total} 幀")
+        self._frame_label.setVisible(True)
 
     def _on_finished(self) -> None:
         total = getattr(self, "_progress_total", 0)

@@ -2,6 +2,67 @@
 
 本檔記錄 xFRAME808 的版本改動。格式參照 [Keep a Changelog](https://keepachangelog.com/zh-TW/1.1.0/)。
 
+## [3.3.0] - 2026-04-23
+
+### Added
+
+- 商品微調新增「套用全部」按鈕：可把目前商品的 X / Y 位移與縮放一次複製到整個商品資料夾，之後仍可回到單張商品再個別覆寫。
+
+### Changed
+
+- 左側前景 / 後景微調與右側商品微調統一成同一套 `TransformPanel` 視覺與互動：
+  - header 改為大尺寸箭頭收合按鈕
+  - `重置` 移到面板底部 footer，降低誤觸
+  - 商品微調移除額外副標與多餘底色，和圖層微調保持一致
+- 商品縮圖列的水平捲動體驗調整為 bar 式 scrollbar，滑鼠滾輪會優先轉成水平捲動。
+- 切換商品縮圖時不再強制自動展開商品微調，避免右側面板頻繁跳動。
+
+### Docs
+
+- README 補上前景 / 後景 / 商品微調的使用方式、商品縮圖列、套用全部商品的流程說明。
+- `scripts/build_mac.sh`、`scripts/build_win.bat`、`.github/workflows/build.yml` 同步補上 `--collect-all imageio_ffmpeg`，配合 v3.2 的影片打包需求；README 影片章節同步改為「已預先帶上此參數」。
+
+## [3.2.0] - 2026-04-22
+
+本版加入**影片商品套框 MVP**：商品資料夾可混放靜圖與短影片，影片會逐幀套框後以原容器輸出並保留音軌。前景 / 後景維持靜圖，UI 流程無大改動。
+
+### Added
+
+#### 影片商品套框
+- 商品資料夾支援 `.mp4`、`.mov`、`.m4v`、`.webm`；依副檔名自動走影片路徑。
+- 輸出容器與輸入一致（`_套框.mp4` / `.mov` / …），codec 走容器預設：mp4/mov/m4v → H.264、webm → VP9，皆走 `yuv420p`。
+- 音軌以 ffmpeg `-map 0:v:0 -map 1:a:0?` 直接 mux 原音；原 codec 與目標容器不相容時降回 AAC / libopus 重新編碼。
+- 新增 `core/video.py`：`probe_video` / `iter_frames` / `read_first_frame` / `open_writer` / `mux_audio`。
+- 新增 `build_composite_frame(preset_id, product_image, ...)` 作為逐幀合成的核心；`build_composite(preset_id, product_path, ...)` 改為薄 wrapper，同時自動處理影片（取首幀供預覽用）。
+- `batch_composite` 新增 `frame_progress` / `cancel_check` 關鍵字參數，worker 可觀察逐幀進度並在影片處理中途取消。
+- `CompositeWorker` 新增 `frame_progress` Signal；主視窗進度區塊新增「{檔名} · x/N 幀」副標籤，檔案完成時自動清除。
+
+#### 測試
+- 新增 `test_build_composite_frame_matches_build_composite`，鎖定「path → image」重構前後像素一致。
+- 新增 `test_list_products_includes_video_extensions`，確認影片副檔名會被 `list_products` 收錄。
+
+### Changed
+
+- `SUPPORTED_EXTENSIONS` 擴張為圖片 + 影片副檔名；新增 `SUPPORTED_IMAGE_EXTENSIONS` 作為純圖片集合。
+- 批次輸出：影片沿用原容器副檔名，圖片仍輸出為 `.png`。
+- `_fit_product_to_preset` 內部重構為 `_place_product`（吃 PIL Image 而非 path），支援路徑 / 記憶體幀兩條輸入。
+- 主視窗空資料夾提示改為「圖片或影片」。
+- `requirements.txt` 新增 `imageio-ffmpeg`。
+
+### Not in Scope
+
+刻意延後到後續版本：
+- 替換 / 靜音音軌的 UI 欄位（`mux_audio` 介面已可用，只差 UI）。
+- 解析度 / bitrate / CRF / 強制轉碼到指定容器等輸出微調。
+- 動態前景 / 後景框（MP4 / GIF）。
+- `.avi` / `.mkv` 等較冷門容器。
+- 影片旋轉 metadata 自動校正（直式影片請於來源端事先轉正）。
+
+### Packaging Notes
+
+- `imageio-ffmpeg` 內建 ffmpeg binary（約 70 MB），PyInstaller 打包需補上 `--collect-all imageio_ffmpeg`；`scripts/build_mac.sh`、`scripts/build_win.bat` 與 `.github/workflows/build.yml` 已同步此參數。
+- Installer / 綠色版體積會因此變大，首次開啟仍受 macOS Gatekeeper / Windows SmartScreen 限制（與既有版本相同）。
+
 ## [3.1.0] - 2026-04-22
 
 ### Added

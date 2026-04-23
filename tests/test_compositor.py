@@ -8,8 +8,11 @@ from PIL import Image, ImageDraw
 
 from core.compositor import (
     BOX_PADDING,
+    IDENTITY_TRANSFORM,
+    LayerTransform,
     batch_composite,
     build_composite,
+    build_composite_frame,
     build_layer_preview,
     flatten_on_white,
     get_layout_preset,
@@ -144,6 +147,36 @@ class CompositorTests(unittest.TestCase):
         self.assertEqual(background.size, (1080, 1080))
         self.assertEqual(background.getpixel((12, 12)), (255, 0, 0, 255))
 
+    def test_build_composite_frame_matches_build_composite(self):
+        preset = get_layout_preset("1:1")
+        product_path = self.make_product_with_transparent_border("product.png")
+        background = Image.new("RGBA", preset.canvas_size, (255, 0, 0, 255))
+        foreground = Image.new("RGBA", preset.canvas_size, (0, 0, 255, 64))
+
+        via_path = build_composite(
+            "1:1", product_path, background=background, foreground=foreground
+        )
+        with Image.open(product_path) as src:
+            product_image = src.convert("RGBA")
+        via_image = build_composite_frame(
+            "1:1", product_image, background=background, foreground=foreground
+        )
+
+        self.assertEqual(via_path.size, via_image.size)
+        self.assertEqual(list(via_path.getdata()), list(via_image.getdata()))
+
+    def test_list_products_includes_video_extensions(self):
+        input_dir = self.tmp_path / "mixed_products"
+        input_dir.mkdir()
+        (input_dir / "a.mp4").touch()
+        (input_dir / "b.MOV").touch()
+        (input_dir / "c.webm").touch()
+        Image.new("RGBA", (20, 20), (255, 0, 0, 255)).save(input_dir / "d.png")
+
+        names = sorted(path.name for path in list_products(input_dir))
+
+        self.assertEqual(names, ["a.mp4", "b.MOV", "c.webm", "d.png"])
+
     def test_list_products_accepts_uppercase_extensions(self):
         input_dir = self.tmp_path / "products"
         input_dir.mkdir()
@@ -264,6 +297,161 @@ class CompositorTests(unittest.TestCase):
             self.assertEqual(result.size, preset.canvas_size)
             self.assertEqual(result.getpixel((5, 5)), (255, 0, 0, 255))
             self.assertEqual(result.getpixel(center), (0, 255, 0, 255))
+
+
+    def test_layer_transform_identity_matches_legacy(self):
+        preset = get_layout_preset("1:1")
+        product_path = self.make_product_with_transparent_border("product.png")
+        background = Image.new("RGBA", preset.canvas_size, (255, 0, 0, 255))
+        foreground = Image.new("RGBA", preset.canvas_size, (0, 0, 255, 64))
+
+        legacy = build_composite(
+            "1:1", product_path, background=background, foreground=foreground
+        )
+        with_identity = build_composite(
+            "1:1",
+            product_path,
+            background=background,
+            foreground=foreground,
+            background_transform=IDENTITY_TRANSFORM,
+            foreground_transform=IDENTITY_TRANSFORM,
+            product_transform=IDENTITY_TRANSFORM,
+        )
+        self.assertEqual(list(legacy.getdata()), list(with_identity.getdata()))
+
+    def test_background_transform_offsets_pixels(self):
+        preset = get_layout_preset("1:1")
+        product_path = self.make_image("product.png", (100, 100), (0, 255, 0, 255))
+        background = Image.new("RGBA", preset.canvas_size, (255, 0, 0, 255))
+
+        result = build_composite(
+            "1:1",
+            product_path,
+            background=background,
+            background_transform=LayerTransform(offset_x=100, offset_y=0, scale=1.0),
+        )
+        # The far-left edge, previously red, is revealed outside the shifted
+        # bg → flattens to white. The original bg still shows past x=100.
+        self.assertEqual(result.getpixel((5, 5)), (255, 255, 255, 255))
+        self.assertEqual(result.getpixel((200, 5)), (255, 0, 0, 255))
+
+    def test_foreground_transform_scale_half(self):
+        preset = get_layout_preset("1:1")
+        product_path = self.make_image("product.png", (100, 100), (0, 255, 0, 255))
+        background = Image.new("RGBA", preset.canvas_size, (255, 0, 0, 255))
+        # Fully opaque blue fg that normally covers the whole canvas.
+        foreground = Image.new("RGBA", preset.canvas_size, (0, 0, 255, 255))
+
+        result = build_composite(
+            "1:1",
+            product_path,
+            background=background,
+            foreground=foreground,
+            foreground_transform=LayerTransform(scale=0.5),
+        )
+        # Outside the centered half-sized fg → bg red remains.
+        self.assertEqual(result.getpixel((10, 10)), (255, 0, 0, 255))
+        # Center is covered by the scaled-down fg → blue.
+        cx = preset.canvas_size[0] // 2
+        cy = preset.canvas_size[1] // 2
+        self.assertEqual(result.getpixel((cx, cy)), (0, 0, 255, 255))
+
+    def test_product_transforms_dict_is_per_path(self):
+        preset = get_layout_preset("1:1")
+        input_dir = self.tmp_path / "per_product_input"
+        output_dir = self.tmp_path / "per_product_output"
+        input_dir.mkdir()
+
+        a_path = input_dir / "a.png"
+        b_path = input_dir / "b.png"
+        Image.new("RGBA", (100, 100), (0, 255, 0, 255)).save(a_path)
+        Image.new("RGBA", (100, 100), (0, 255, 0, 255)).save(b_path)
+
+        background_path = self.make_image(
+            "white_bg.png", preset.canvas_size, (255, 255, 255, 255)
+        )
+
+        product_transforms = {
+            a_path: LayerTransform(offset_x=200, offset_y=0, scale=1.0),
+        }
+
+        outputs = [
+            entry[2]
+            for entry in batch_composite(
+                "1:1",
+                input_dir,
+                output_dir,
+                background_path=background_path,
+                product_transforms=product_transforms,
+            )
+        ]
+
+        self.assertEqual(len(outputs), 2)
+        by_name = {p.stem: p for p in outputs}
+
+        mid_y = (preset.safe_box[1] + preset.safe_box[3]) // 2
+
+        def first_green_x(img: Image.Image) -> int:
+            for x in range(img.width):
+                if img.getpixel((x, mid_y)) == (0, 255, 0, 255):
+                    return x
+            return -1
+
+        with Image.open(by_name["a_套框"]) as img_a:
+            a_left = first_green_x(img_a)
+        with Image.open(by_name["b_套框"]) as img_b:
+            b_left = first_green_x(img_b)
+
+        self.assertGreaterEqual(b_left, 0)
+        self.assertGreaterEqual(a_left, 0)
+        self.assertEqual(a_left - b_left, 200)
+
+    def test_product_transforms_missing_key_uses_identity(self):
+        preset = get_layout_preset("1:1")
+        input_dir = self.tmp_path / "identity_input"
+        output_dir = self.tmp_path / "identity_output"
+        input_dir.mkdir()
+        product_path = input_dir / "p.png"
+        Image.new("RGBA", (100, 100), (0, 255, 0, 255)).save(product_path)
+
+        background_path = self.make_image(
+            "red_bg.png", preset.canvas_size, (255, 0, 0, 255)
+        )
+
+        outputs = [
+            entry[2]
+            for entry in batch_composite(
+                "1:1",
+                input_dir,
+                output_dir,
+                background_path=background_path,
+                product_transforms={},
+            )
+        ]
+        self.assertEqual(len(outputs), 1)
+        with Image.open(outputs[0]) as result:
+            center = (
+                (preset.safe_box[0] + preset.safe_box[2]) // 2,
+                (preset.safe_box[1] + preset.safe_box[3]) // 2,
+            )
+            self.assertEqual(result.getpixel((5, 5)), (255, 0, 0, 255))
+            self.assertEqual(result.getpixel(center), (0, 255, 0, 255))
+
+    def test_build_layer_preview_supports_layer_transforms(self):
+        preset = get_layout_preset("1:1")
+        foreground = Image.new("RGBA", preset.canvas_size, (0, 0, 255, 255))
+        background = Image.new("RGBA", preset.canvas_size, (255, 0, 0, 255))
+
+        result = build_layer_preview(
+            "1:1",
+            background=background,
+            foreground=foreground,
+            foreground_transform=LayerTransform(scale=0.5),
+        )
+        # Outside the shrunken fg → red bg
+        self.assertEqual(result.getpixel((8, 8)), (255, 0, 0, 255))
+        cx = preset.canvas_size[0] // 2
+        self.assertEqual(result.getpixel((cx, cx)), (0, 0, 255, 255))
 
 
 if __name__ == "__main__":

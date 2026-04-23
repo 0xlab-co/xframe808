@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from core.compositor import IDENTITY_TRANSFORM, LayerTransform
 from ui import icons, theme
 
 
@@ -78,13 +79,26 @@ class SectionHeader(QWidget):
 
         zh = QLabel(title_zh)
         zh.setStyleSheet(
-            f"color: {theme.TEXT_PRIMARY}; font-size: 12px; font-weight: 600; letter-spacing: 0.02em;"
+            f"""
+            color: {theme.TEXT_PRIMARY};
+            font-size: 12px;
+            font-weight: 600;
+            letter-spacing: 0.02em;
+            background: transparent;
+            border: none;
+            """
         )
         layout.addWidget(zh)
 
         en = QLabel(title_en.upper())
         en.setStyleSheet(
-            f"color: {theme.TEXT_MUTED}; font-size: 10px; letter-spacing: 0.06em;"
+            f"""
+            color: {theme.TEXT_MUTED};
+            font-size: 10px;
+            letter-spacing: 0.06em;
+            background: transparent;
+            border: none;
+            """
         )
         layout.addWidget(en)
 
@@ -368,6 +382,8 @@ class SliderRow(QWidget):
     ):
         super().__init__(parent)
         self._fmt = fmt
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setStyleSheet("background: transparent; border: none;")
 
         row = QHBoxLayout(self)
         row.setContentsMargins(0, 0, 0, 0)
@@ -379,17 +395,30 @@ class SliderRow(QWidget):
         label_col.setSpacing(0)
         zh = QLabel(label_zh)
         zh.setStyleSheet(
-            f"color: {theme.TEXT_SECONDARY}; font-size: 11px; font-weight: 500;"
+            f"""
+            color: {theme.TEXT_SECONDARY};
+            font-size: 11px;
+            font-weight: 500;
+            background: transparent;
+            border: none;
+            """
         )
         en = QLabel(label_en.upper())
         en.setStyleSheet(
-            f"color: {theme.TEXT_MUTED}; font-size: 10px; letter-spacing: 0.05em;"
+            f"""
+            color: {theme.TEXT_MUTED};
+            font-size: 10px;
+            letter-spacing: 0.05em;
+            background: transparent;
+            border: none;
+            """
         )
         label_col.addWidget(zh)
         label_col.addWidget(en)
 
         label_wrap = QWidget()
         label_wrap.setFixedWidth(90)
+        label_wrap.setStyleSheet("background: transparent; border: none;")
         label_wrap.setLayout(label_col)
         row.addWidget(label_wrap)
 
@@ -400,6 +429,9 @@ class SliderRow(QWidget):
         self._slider.setValue(default)
         self._slider.setStyleSheet(
             f"""
+            QSlider {{
+                background: transparent;
+            }}
             QSlider::groove:horizontal {{
                 height: 2px;
                 background: {theme.BG_ACTIVE};
@@ -434,7 +466,14 @@ class SliderRow(QWidget):
         self._value_label.setFixedWidth(56)
         self._value_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self._value_label.setStyleSheet(
-            f"color: {theme.ACCENT}; font-family: '{mono}'; font-size: 11px; font-weight: 500;"
+            f"""
+            color: {theme.ACCENT};
+            font-family: '{mono}';
+            font-size: 11px;
+            font-weight: 500;
+            background: transparent;
+            border: none;
+            """
         )
         row.addWidget(self._value_label)
 
@@ -547,3 +586,304 @@ class ActionButton(QFrame):
         self._icon.set_icon(icon_name)
         self._icon.set_color(icon_color)
         self._refresh_style()
+
+
+# ── Chevron toggle (used as a section header action) ────────────────────────
+class _ChevronToggle(QWidget):
+    """Small chevron button. right = collapsed, down = expanded."""
+
+    toggled = Signal(bool)  # emits new collapsed state
+
+    def __init__(self, collapsed: bool = True, parent=None):
+        super().__init__(parent)
+        self._collapsed = collapsed
+        self._hovering = False
+        self.setFixedSize(34, 28)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self._icon = IconLabel(
+            "chevron-right" if collapsed else "chevron-down",
+            size=18,
+            color=theme.TEXT_MUTED,
+        )
+        row = QHBoxLayout(self)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(0)
+        row.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        row.addWidget(self._icon)
+        self._refresh_style()
+
+    def is_collapsed(self) -> bool:
+        return self._collapsed
+
+    def set_collapsed(self, collapsed: bool, *, emit: bool = True) -> None:
+        collapsed = bool(collapsed)
+        if collapsed == self._collapsed:
+            return
+        self._collapsed = collapsed
+        self._icon.set_icon("chevron-right" if collapsed else "chevron-down")
+        if emit:
+            self.toggled.emit(collapsed)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton and self.isEnabled():
+            self.set_collapsed(not self._collapsed)
+        super().mousePressEvent(event)
+
+    def enterEvent(self, event):
+        self._hovering = True
+        self._refresh_style()
+        self._icon.set_color(theme.TEXT_PRIMARY)
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self._hovering = False
+        self._refresh_style()
+        self._icon.set_color(theme.TEXT_MUTED)
+        super().leaveEvent(event)
+
+    def _refresh_style(self) -> None:
+        background = theme.BG_HOVER if self._hovering and self.isEnabled() else theme.BG_BASE
+        border = theme.BORDER_STRONG if self._hovering and self.isEnabled() else theme.BORDER
+        self.setStyleSheet(
+            f"""
+            background: {background};
+            border: 1px solid {border};
+            border-radius: {theme.RADIUS_SM}px;
+            """
+        )
+
+
+# ── Collapsible section ─────────────────────────────────────────────────────
+class CollapsibleSection(QWidget):
+    """SectionHeader + a body container that can be toggled via a chevron.
+
+    Usage:
+        sec = CollapsibleSection("sliders", "位置微調", "Adjust")
+        sec.body_layout().addWidget(my_slider_row)
+    """
+
+    toggled = Signal(bool)  # emits new collapsed state
+
+    def __init__(
+        self,
+        icon_name: str,
+        title_zh: str,
+        title_en: str,
+        *,
+        collapsed: bool = True,
+        parent=None,
+    ):
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setStyleSheet("background: transparent; border: none;")
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(8)
+
+        self._chevron = _ChevronToggle(collapsed=collapsed)
+        self._chevron.toggled.connect(self._on_chevron_toggled)
+        self._header = SectionHeader(icon_name, title_zh, title_en, action=self._chevron)
+        outer.addWidget(self._header)
+
+        self._body = QWidget()
+        self._body.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self._body.setStyleSheet("background: transparent; border: none;")
+        self._body_layout = QVBoxLayout(self._body)
+        self._body_layout.setContentsMargins(0, 0, 0, 0)
+        self._body_layout.setSpacing(10)
+        self._body.setVisible(not collapsed)
+        outer.addWidget(self._body)
+
+    def body_layout(self) -> QVBoxLayout:
+        return self._body_layout
+
+    def is_collapsed(self) -> bool:
+        return self._chevron.is_collapsed()
+
+    def set_collapsed(self, collapsed: bool) -> None:
+        self._chevron.set_collapsed(collapsed, emit=False)
+        self._body.setVisible(not collapsed)
+
+    def _on_chevron_toggled(self, collapsed: bool) -> None:
+        self._body.setVisible(not collapsed)
+        self.toggled.emit(collapsed)
+
+
+# ── Transform panels (3 sliders inside a CollapsibleSection) ────────────────
+def _reset_button(on_click: Callable[[], None]) -> QPushButton:
+    return _footer_button("重置", on_click)
+
+
+def _footer_button(label: str, on_click: Callable[[], None]) -> QPushButton:
+    btn = QPushButton(label)
+    btn.setFixedHeight(28)
+    btn.setCursor(Qt.CursorShape.PointingHandCursor)
+    btn.setMinimumWidth(88)
+    btn.setStyleSheet(
+        f"""
+        QPushButton {{
+            background: {theme.BG_BASE};
+            border: 1px solid {theme.BORDER};
+            border-radius: {theme.RADIUS_SM}px;
+            color: {theme.TEXT_SECONDARY};
+            font-size: 11px;
+            font-weight: 600;
+            padding: 0 12px;
+        }}
+        QPushButton:hover {{
+            background: {theme.BG_HOVER};
+            border-color: {theme.BORDER_STRONG};
+            color: {theme.TEXT_PRIMARY};
+        }}
+        QPushButton:disabled {{
+            color: {theme.TEXT_MUTED};
+            background: {theme.BG_ELEVATED};
+        }}
+        """
+    )
+    btn.clicked.connect(on_click)
+    return btn
+
+
+class TransformPanel(QWidget):
+    """Collapsible group of X/Y offset + scale sliders bound to a LayerTransform."""
+
+    transform_changed = Signal(LayerTransform)
+    extra_action_requested = Signal()
+
+    def __init__(
+        self,
+        title_zh: str,
+        title_en: str,
+        *,
+        icon_name: str = "sliders",
+        collapsed: bool = True,
+        show_subtitle: bool = False,
+        extra_footer_button_text: str | None = None,
+        parent=None,
+    ):
+        super().__init__(parent)
+        self._transform = IDENTITY_TRANSFORM
+        self._suppress = False
+        self._extra_action_available = extra_footer_button_text is not None
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setStyleSheet("background: transparent; border: none;")
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        self._section = CollapsibleSection(icon_name, title_zh, title_en, collapsed=collapsed)
+        outer.addWidget(self._section)
+
+        body = self._section.body_layout()
+        body.setSpacing(12)
+
+        self._subtitle: QLabel | None = None
+        if show_subtitle:
+            mono = theme.mono_family()
+            self._subtitle = QLabel("")
+            self._subtitle.setStyleSheet(
+                f"color: {theme.TEXT_MUTED}; font-family: '{mono}'; font-size: 10px;"
+            )
+            body.addWidget(self._subtitle)
+
+        self._offset_x = SliderRow(
+            "X 位移", "Offset X", -300, 300, 0, lambda v: f"{'+' if v > 0 else ''}{v}px"
+        )
+        self._offset_y = SliderRow(
+            "Y 位移", "Offset Y", -300, 300, 0, lambda v: f"{'+' if v > 0 else ''}{v}px"
+        )
+        self._scale = SliderRow("縮放", "Scale", 50, 150, 100, lambda v: f"{v}%")
+
+        for row in (self._offset_x, self._offset_y, self._scale):
+            row.value_changed.connect(self._on_slider_changed)
+            body.addWidget(row)
+
+        footer = QFrame()
+        footer.setObjectName("TransformFooter")
+        footer.setStyleSheet(
+            f"""
+            #TransformFooter {{
+                background: transparent;
+                border-top: 1px solid {theme.BORDER};
+            }}
+            """
+        )
+        footer_row = QHBoxLayout(footer)
+        footer_row.setContentsMargins(0, 10, 0, 0)
+        footer_row.setSpacing(8)
+        if extra_footer_button_text is not None:
+            self._extra_action_btn = _footer_button(
+                extra_footer_button_text, self.extra_action_requested.emit
+            )
+            footer_row.addWidget(self._extra_action_btn)
+        else:
+            self._extra_action_btn = None
+        footer_row.addStretch(1)
+        self._reset_btn = _reset_button(self._on_reset)
+        footer_row.addWidget(self._reset_btn)
+        body.addWidget(footer)
+
+        self._refresh_reset_state()
+
+    # ── Section control ──
+    def set_collapsed(self, collapsed: bool) -> None:
+        self._section.set_collapsed(collapsed)
+
+    def is_collapsed(self) -> bool:
+        return self._section.is_collapsed()
+
+    # ── Subtitle (product filename) ──
+    def set_subtitle(self, text: str) -> None:
+        if self._subtitle is not None:
+            self._subtitle.setText(text)
+
+    # ── Transform state ──
+    def transform(self) -> LayerTransform:
+        return self._transform
+
+    def set_transform(self, transform: LayerTransform) -> None:
+        self._transform = transform
+        self._suppress = True
+        try:
+            self._offset_x.set_value(transform.offset_x)
+            self._offset_y.set_value(transform.offset_y)
+            self._scale.set_value(int(round(transform.scale * 100)))
+        finally:
+            self._suppress = False
+        self._refresh_reset_state()
+
+    def _on_slider_changed(self, _value: int) -> None:
+        if self._suppress:
+            return
+        self._transform = LayerTransform(
+            offset_x=self._offset_x.value(),
+            offset_y=self._offset_y.value(),
+            scale=self._scale.value() / 100.0,
+        )
+        self._refresh_reset_state()
+        self.transform_changed.emit(self._transform)
+
+    def _on_reset(self) -> None:
+        self.set_transform(IDENTITY_TRANSFORM)
+        self.transform_changed.emit(self._transform)
+
+    def setEnabled(self, enabled: bool) -> None:  # noqa: N802 — Qt override
+        super().setEnabled(enabled)
+        for row in (self._offset_x, self._offset_y, self._scale):
+            row.setEnabled(enabled)
+        self._refresh_action_states()
+
+    def set_extra_action_enabled(self, enabled: bool) -> None:
+        self._extra_action_available = enabled
+        self._refresh_action_states()
+
+    def _refresh_reset_state(self) -> None:
+        self._refresh_action_states()
+
+    def _refresh_action_states(self) -> None:
+        self._reset_btn.setEnabled(self.isEnabled() and not self._transform.is_identity)
+        if self._extra_action_btn is not None:
+            self._extra_action_btn.setEnabled(self.isEnabled() and self._extra_action_available)

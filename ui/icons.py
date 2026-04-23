@@ -57,6 +57,12 @@ _ICON_PATHS: dict[str, str] = {
     ),
     "output": '<polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>',
     "zap": '<polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>',
+    "chevron-right": '<polyline points="9 18 15 12 9 6"/>',
+    "chevron-down": '<polyline points="6 9 12 15 18 9"/>',
+    "video": (
+        '<polygon points="23 7 16 12 23 17 23 7"/>'
+        '<rect x="1" y="5" width="15" height="14" rx="2" ry="2"/>'
+    ),
 }
 
 # Per-icon visual-weight correction. Feather icons share a 24×24 viewBox, but
@@ -77,6 +83,9 @@ _ICON_SCALE: dict[str, float] = {
     "sliders": 0.88,
     "output": 0.96,
     "zap": 1.00,
+    "chevron-right": 0.78,
+    "chevron-down": 0.78,
+    "video": 0.92,
 }
 
 

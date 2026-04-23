@@ -106,6 +106,28 @@ def build_global_stylesheet() -> str:
         QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
             background: transparent;
         }}
+        QScrollBar:horizontal {{
+            background: {BG_ACTIVE};
+            height: 10px;
+            margin: 0;
+            border-top: 1px solid {BORDER};
+        }}
+        QScrollBar::handle:horizontal {{
+            background: {BORDER_STRONG};
+            border-radius: 4px;
+            min-width: 40px;
+            margin: 2px 2px;
+        }}
+        QScrollBar::handle:horizontal:hover {{
+            background: {TEXT_MUTED};
+        }}
+        QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{
+            width: 0;
+            background: transparent;
+        }}
+        QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {{
+            background: transparent;
+        }}
         QMessageBox {{
             background-color: {BG_PANEL};
         }}
