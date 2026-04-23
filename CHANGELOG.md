@@ -2,6 +2,16 @@
 
 本檔記錄 xFRAME808 的版本改動。格式參照 [Keep a Changelog](https://keepachangelog.com/zh-TW/1.1.0/)。
 
+## [3.3.1] - 2026-04-23
+
+### Fixed
+
+- **macOS 影片輸出失效**：未經 `xattr -cr` 解除隔離的使用者（走 Gatekeeper「仍要打開」路徑）首次啟動後，巢狀 ffmpeg binary 仍帶 quarantine 屬性，被 macOS 靜默終止，造成影片商品無法輸出。現在 app 啟動時會自動對自身 bundle 移除 quarantine 屬性，使用者不再需要手動 `xattr -cr` 也能處理影片商品。
+
+### Changed
+
+- GitHub Actions 升級至 Node 24 版本：`actions/checkout@v6`、`actions/setup-python@v6`、`actions/upload-artifact@v7`、`softprops/action-gh-release@v3`（原 v4 / v5 / v4 / v2 將於 2026-09-16 下線）。
+
 ## [3.3.0] - 2026-04-23
 
 本版改動微調模型：原本側邊欄單一全域「位置微調」被拆成**前景 / 後景 / 商品**三組獨立微調，商品微調並以每張檔案各自保存位置。右側預覽新增商品縮圖列，可直接點選要獨立調整的商品。
